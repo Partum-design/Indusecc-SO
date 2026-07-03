@@ -5,8 +5,7 @@ const {
   getUserTrainings,
   getUserCertificates,
   updateTrainingProgress,
-  downloadCertificate,
-  createSampleTrainings
+  downloadCertificate
 } = require('../controllers/trainingController');
 
 // Todas las rutas requieren autenticación
@@ -23,8 +22,5 @@ router.put('/:id/progress', updateTrainingProgress);
 
 // Descargar certificado
 router.get('/certificates/:id/download', downloadCertificate);
-
-// Crear capacitaciones de ejemplo (solo para desarrollo)
-router.post('/sample', createSampleTrainings);
 
 module.exports = router;

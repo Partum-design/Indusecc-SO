@@ -47,8 +47,8 @@ class Particle {
 export default function Login() {
   const navigate = useNavigate()
   const { login } = useContext(AuthContext)
-  const [email, setEmail] = useState('colaborador@indusecc.com')
-  const [password, setPassword] = useState('colab123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [errorMsg, setErrorMsg] = useState(null)
   
   // Referencia para el canvas de partículas

@@ -16,11 +16,15 @@ export default function Register() {
     setErrorMsg(null)
     setSuccessMsg(null)
 
-    if (!form.name || !form.email) {
-      setErrorMsg('Nombre y correo son obligatorios')
+    if (!form.name || !form.email || !form.password) {
+      setErrorMsg('Nombre, correo y contraseña son obligatorios')
       return
     }
-    if (form.password && form.password !== form.confirmPassword) {
+    if (form.password.length < 8) {
+      setErrorMsg('La contraseña debe tener al menos 8 caracteres')
+      return
+    }
+    if (form.password !== form.confirmPassword) {
       setErrorMsg('Las contraseñas no coinciden')
       return
     }
@@ -31,6 +35,7 @@ export default function Register() {
         name: form.name,
         email: form.email,
         department: form.department,
+        password: form.password,
         requestedRole: 'COLABORADOR',
       })
       setSuccessMsg(res.data?.message || 'Solicitud enviada. Espera la aprobación del administrador.')
@@ -106,6 +111,14 @@ export default function Register() {
                 <option>Recursos Humanos</option>
                 <option>Dirección</option>
               </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
+              <label className="lbl">Contraseña</label>
+              <input className="finput" type="password" placeholder="Mínimo 8 caracteres" value={form.password} onChange={e => update('password', e.target.value)} required minLength={8} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
+              <label className="lbl">Confirmar contraseña</label>
+              <input className="finput" type="password" placeholder="Repite tu contraseña" value={form.confirmPassword} onChange={e => update('confirmPassword', e.target.value)} required minLength={8} />
             </div>
 
             <button type="submit" disabled={loading} className="btn btn-red" style={{ width: '100%', justifyContent: 'center', padding: '13px', fontSize: '.9rem', opacity: loading ? 0.7 : 1 }}>

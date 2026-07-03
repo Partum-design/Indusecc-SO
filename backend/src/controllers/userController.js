@@ -1,13 +1,25 @@
-const User = require('../models/User');
+const { supabaseAdmin, supabaseAuth } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
 
-// Crear usuario
+const MANAGEABLE_BY_ADMIN = ['COLABORADOR', 'CONSULTOR'];
+
+const toApiUser = (profile) => ({
+  id: profile.id,
+  _id: profile.id,
+  name: profile.name,
+  email: profile.email,
+  role: profile.role?.toUpperCase(),
+  active: profile.active,
+  createdAt: profile.created_at,
+  updatedAt: profile.updated_at,
+});
+
+// Crear usuario directamente (sin pasar por el flujo de solicitud/aprobación)
 const createUser = async (req, res) => {
   try {
     const { name, email, password, role, active } = req.body;
 
-    // Si el usuario autenticado es ADMIN, solo puede crear COLABORADOR o CONSULTOR
-    if (req.user.role === 'ADMIN' && !['COLABORADOR', 'CONSULTOR'].includes(role)) {
+    if (req.user.role === 'ADMIN' && !MANAGEABLE_BY_ADMIN.includes(role)) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para crear este tipo de usuario',
@@ -15,56 +27,44 @@ const createUser = async (req, res) => {
       });
     }
 
-    // Verificar si el email ya existe
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: 'El email ya está registrado',
-        code: 'DUPLICATE_EMAIL'
-      });
-    }
-
-    // Crear usuario
-    const user = new User({
-      name,
+    const { data: created, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
-      role,
-      active: active !== false
+      email_confirm: true,
+      user_metadata: { name }
     });
 
-    await user.save();
+    if (createError) {
+      if (/already registered|exists/i.test(createError.message || '')) {
+        return res.status(409).json({
+          success: false,
+          message: 'El email ya está registrado',
+          code: 'DUPLICATE_EMAIL'
+        });
+      }
+      throw createError;
+    }
+
+    // El trigger de alta ya creó el perfil (colaborador, inactivo); lo ajustamos
+    // al rol y estado solicitados por quien está creando la cuenta.
+    const { data: profile, error: updateError } = await supabaseAdmin
+      .from('profiles')
+      .update({ role: role.toLowerCase(), active: active !== false })
+      .eq('id', created.user.id)
+      .select('id, name, email, role, active, created_at, updated_at')
+      .single();
+
+    if (updateError) throw updateError;
 
     logger.info(`Usuario creado: ${email} por ${req.user?.email || 'sistema'}`);
 
     res.status(201).json({
       success: true,
       message: 'Usuario creado exitosamente',
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          active: user.active,
-          createdAt: user.createdAt,
-        }
-      }
+      data: { user: toApiUser(profile) }
     });
   } catch (error) {
     logger.error('Error al crear usuario:', error);
-    
-    // Manejar errores de duplicado de MongoDB
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyValue || {})[0];
-      return res.status(409).json({
-        success: false,
-        message: `${field === 'email' ? 'El email' : field} ya está registrado`,
-        code: 'DUPLICATE_ERROR'
-      });
-    }
-    
     res.status(500).json({
       success: false,
       message: 'Error al crear usuario',
@@ -73,43 +73,38 @@ const createUser = async (req, res) => {
   }
 };
 
-// Obtener usuarios con paginación y filtros
 const getUsers = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 10, 100);
-    const skip = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    // Filtros
-    const filter = {};
-    if (req.query.role) filter.role = req.query.role;
-    if (req.query.active !== undefined) filter.active = req.query.active === 'true';
+    let query = supabaseAdmin
+      .from('profiles')
+      .select('id, name, email, role, active, created_at, updated_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (req.query.role) query = query.eq('role', req.query.role.toLowerCase());
+    if (req.query.active !== undefined) query = query.eq('active', req.query.active === 'true');
     if (req.query.search) {
-      filter.$or = [
-        { name: { $regex: req.query.search, $options: 'i' } },
-        { email: { $regex: req.query.search, $options: 'i' } }
-      ];
+      query = query.or(`name.ilike.%${req.query.search}%,email.ilike.%${req.query.search}%`);
     }
 
-    const [users, total] = await Promise.all([
-      User.find(filter)
-        .select('-password')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      User.countDocuments(filter)
-    ]);
+    const { data: profiles, count, error } = await query;
+    if (error) throw error;
 
     res.json({
       success: true,
       message: 'Usuarios obtenidos exitosamente',
       data: {
-        users,
+        users: profiles.map(toApiUser),
         pagination: {
           page,
           limit,
-          total,
-          pages: Math.ceil(total / limit)
+          total: count || 0,
+          pages: Math.ceil((count || 0) / limit)
         }
       }
     });
@@ -123,11 +118,16 @@ const getUsers = async (req, res) => {
   }
 };
 
-// Obtener usuario por ID
 const getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
-    if (!user) {
+    const { data: profile, error } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, email, role, active, created_at, updated_at')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!profile) {
       return res.status(404).json({
         success: false,
         message: 'Usuario no encontrado',
@@ -138,7 +138,7 @@ const getUserById = async (req, res) => {
     res.json({
       success: true,
       message: 'Usuario obtenido exitosamente',
-      data: { user }
+      data: { user: toApiUser(profile) }
     });
   } catch (error) {
     logger.error('Error al obtener usuario:', error);
@@ -150,13 +150,17 @@ const getUserById = async (req, res) => {
   }
 };
 
-// ...existing code...
-
-// Eliminar usuario
+// Elimina la cuenta de Auth (borra en cascada el perfil por FK) — minimización
+// de datos: no dejamos cuentas "fantasma" ni credenciales huérfanas.
 const deleteUser = async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) {
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('id, email')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (!profile) {
       return res.status(404).json({
         success: false,
         message: 'Usuario no encontrado',
@@ -164,12 +168,15 @@ const deleteUser = async (req, res) => {
       });
     }
 
-    logger.info(`Usuario eliminado: ${user.email} por ${req.user?.email || 'sistema'}`);
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(req.params.id);
+    if (error) throw error;
+
+    logger.info(`Usuario eliminado: ${profile.email} por ${req.user?.email || 'sistema'}`);
 
     res.json({
       success: true,
       message: 'Usuario eliminado exitosamente',
-      data: { deletedUser: { id: user._id, email: user.email } }
+      data: { deletedUser: { id: profile.id, email: profile.email } }
     });
   } catch (error) {
     logger.error('Error al eliminar usuario:', error);
@@ -181,11 +188,16 @@ const deleteUser = async (req, res) => {
   }
 };
 
-// Cambiar estado de usuario
 const toggleUserStatus = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
+    const { data: profile, error: fetchError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, email, role, active')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!profile) {
       return res.status(404).json({
         success: false,
         message: 'Usuario no encontrado',
@@ -193,8 +205,7 @@ const toggleUserStatus = async (req, res) => {
       });
     }
 
-    // Si el usuario autenticado es ADMIN, solo puede cambiar estado a COLABORADOR o CONSULTOR
-    if (req.user.role === 'ADMIN' && !['COLABORADOR', 'CONSULTOR'].includes(user.role)) {
+    if (req.user.role === 'ADMIN' && !MANAGEABLE_BY_ADMIN.includes(profile.role.toUpperCase())) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para cambiar el estado de este usuario',
@@ -202,22 +213,21 @@ const toggleUserStatus = async (req, res) => {
       });
     }
 
-    user.active = !user.active;
-    user.updatedAt = new Date();
-    await user.save();
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from('profiles')
+      .update({ active: !profile.active })
+      .eq('id', profile.id)
+      .select('id, email, active')
+      .single();
 
-    logger.info(`Estado de usuario cambiado: ${user.email} -> ${user.active ? 'activo' : 'inactivo'} por ${req.user?.email || 'sistema'}`);
+    if (updateError) throw updateError;
+
+    logger.info(`Estado de usuario cambiado: ${updated.email} -> ${updated.active ? 'activo' : 'inactivo'} por ${req.user?.email || 'sistema'}`);
 
     res.json({
       success: true,
-      message: `Usuario ${user.active ? 'activado' : 'desactivado'} exitosamente`,
-      data: {
-        user: {
-          id: user._id,
-          email: user.email,
-          active: user.active
-        }
-      }
+      message: `Usuario ${updated.active ? 'activado' : 'desactivado'} exitosamente`,
+      data: { user: { id: updated.id, email: updated.email, active: updated.active } }
     });
   } catch (error) {
     logger.error('Error al cambiar estado de usuario:', error);
@@ -226,17 +236,20 @@ const toggleUserStatus = async (req, res) => {
       message: 'Error al cambiar estado de usuario',
       code: 'TOGGLE_USER_STATUS_ERROR'
     });
-  } 
+  }
 };
 
-// Actualizar usuario
 const updateUser = async (req, res) => {
   try {
     const { name, email, role, active } = req.body;
-    const updateData = {};
 
-    // Primero obtener el usuario a actualizar
-    const userToUpdate = await User.findById(req.params.id);
+    const { data: userToUpdate, error: fetchError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, role')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
     if (!userToUpdate) {
       return res.status(404).json({
         success: false,
@@ -245,40 +258,47 @@ const updateUser = async (req, res) => {
       });
     }
 
-    // Si el usuario autenticado es ADMIN, solo puede actualizar COLABORADOR o CONSULTOR
-    if (req.user.role === 'ADMIN' && !['COLABORADOR', 'CONSULTOR'].includes(userToUpdate.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'No tienes permisos para actualizar este usuario',
-        code: 'FORBIDDEN_ROLE_UPDATE'
-      });
+    if (req.user.role === 'ADMIN') {
+      if (!MANAGEABLE_BY_ADMIN.includes(userToUpdate.role.toUpperCase())) {
+        return res.status(403).json({
+          success: false,
+          message: 'No tienes permisos para actualizar este usuario',
+          code: 'FORBIDDEN_ROLE_UPDATE'
+        });
+      }
+      if (role !== undefined && !MANAGEABLE_BY_ADMIN.includes(role)) {
+        return res.status(403).json({
+          success: false,
+          message: 'No tienes permisos para asignar este tipo de rol',
+          code: 'FORBIDDEN_ROLE_UPDATE'
+        });
+      }
     }
 
-    // Si el usuario autenticado es ADMIN, solo puede cambiar a COLABORADOR o CONSULTOR
-    if (req.user.role === 'ADMIN' && role !== undefined && !['COLABORADOR', 'CONSULTOR'].includes(role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'No tienes permisos para asignar este tipo de rol',
-        code: 'FORBIDDEN_ROLE_UPDATE'
-      });
-    }
-
+    const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
-    if (role !== undefined) updateData.role = role;
+    if (role !== undefined) updateData.role = role.toLowerCase();
     if (active !== undefined) updateData.active = active;
-    updateData.updatedAt = new Date();
 
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
+    if (email !== undefined) {
+      const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(req.params.id, { email });
+      if (authUpdateError) throw authUpdateError;
+    }
+
+    const { data: profile, error: updateError } = await supabaseAdmin
+      .from('profiles')
+      .update(updateData)
+      .eq('id', req.params.id)
+      .select('id, name, email, role, active, created_at, updated_at')
+      .single();
+
+    if (updateError) throw updateError;
 
     res.json({
       success: true,
       message: 'Usuario actualizado exitosamente',
-      data: { user }
+      data: { user: toApiUser(profile) }
     });
   } catch (error) {
     logger.error('Error al actualizar usuario:', error);
@@ -290,27 +310,26 @@ const updateUser = async (req, res) => {
   }
 };
 
-// Obtener estadísticas de usuarios
 const getUserStats = async (req, res) => {
   try {
-    const totalUsers = await User.countDocuments();
-    const activeUsers = await User.countDocuments({ active: true });
-    const inactiveUsers = await User.countDocuments({ active: false });
-    
+    const { count: totalUsers } = await supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true });
+    const { count: activeUsers } = await supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }).eq('active', true);
+    const { count: inactiveUsers } = await supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }).eq('active', false);
+
+    const roles = ['super_admin', 'admin', 'colaborador', 'consultor'];
     const roleStats = {};
-    const roles = ['SUPER_ADMIN', 'ADMIN', 'COLABORADOR', 'CONSULTOR'];
-    
     for (const role of roles) {
-      roleStats[role] = await User.countDocuments({ role });
+      const { count } = await supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }).eq('role', role);
+      roleStats[role.toUpperCase()] = count || 0;
     }
 
     res.json({
       success: true,
       message: 'Estadísticas de usuarios obtenidas exitosamente',
       data: {
-        total: totalUsers,
-        active: activeUsers,
-        inactive: inactiveUsers,
+        total: totalUsers || 0,
+        active: activeUsers || 0,
+        inactive: inactiveUsers || 0,
         byRole: roleStats
       }
     });
@@ -324,22 +343,11 @@ const getUserStats = async (req, res) => {
   }
 };
 
-// Actualizar perfil del usuario autenticado
 const updateUserProfile = async (req, res) => {
   try {
     const { name, currentPassword, newPassword } = req.body;
     const userId = req.user.id;
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Usuario no encontrado',
-        code: 'USER_NOT_FOUND'
-      });
-    }
-
-    // Si intenta cambiar contraseña, validar la actual
     if (newPassword) {
       if (!currentPassword) {
         return res.status(400).json({
@@ -349,8 +357,12 @@ const updateUserProfile = async (req, res) => {
         });
       }
 
-      const passwordMatch = await user.comparePassword(currentPassword);
-      if (!passwordMatch) {
+      const { error: signInError } = await supabaseAuth.auth.signInWithPassword({
+        email: req.user.email,
+        password: currentPassword
+      });
+
+      if (signInError) {
         return res.status(401).json({
           success: false,
           message: 'Contraseña actual incorrecta',
@@ -358,29 +370,39 @@ const updateUserProfile = async (req, res) => {
         });
       }
 
-      user.password = newPassword;
+      const { error: passwordError } = await supabaseAdmin.auth.admin.updateUserById(userId, { password: newPassword });
+      if (passwordError) throw passwordError;
     }
 
-    if (name) user.name = name;
-    user.updatedAt = new Date();
+    const updateData = {};
+    if (name) updateData.name = name;
 
-    await user.save();
+    let profile;
+    if (Object.keys(updateData).length > 0) {
+      const { data, error } = await supabaseAdmin
+        .from('profiles')
+        .update(updateData)
+        .eq('id', userId)
+        .select('id, name, email, role, active, updated_at')
+        .single();
+      if (error) throw error;
+      profile = data;
+    } else {
+      const { data, error } = await supabaseAdmin
+        .from('profiles')
+        .select('id, name, email, role, active, updated_at')
+        .eq('id', userId)
+        .single();
+      if (error) throw error;
+      profile = data;
+    }
 
-    logger.info(`Perfil actualizado: ${user.email}`);
+    logger.info(`Perfil actualizado: ${profile.email}`);
 
     res.json({
       success: true,
       message: 'Perfil actualizado exitosamente',
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          active: user.active,
-          updatedAt: user.updatedAt
-        }
-      }
+      data: { user: toApiUser(profile) }
     });
   } catch (error) {
     logger.error('Error al actualizar perfil:', error);

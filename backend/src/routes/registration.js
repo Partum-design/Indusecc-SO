@@ -21,6 +21,9 @@ const registrationRequestValidation = [
     .isEmail()
     .normalizeEmail()
     .withMessage('Email inválido'),
+  body('password')
+    .isLength({ min: 8 })
+    .withMessage('La contraseña debe tener al menos 8 caracteres'),
   body('phone')
     .optional()
     .isMobilePhone()

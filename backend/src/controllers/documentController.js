@@ -1,17 +1,36 @@
-const Document = require('../models/Document');
+const { randomUUID } = require('crypto');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
-const fs = require('fs');
-const path = require('path');
 
-const uploadsDir = path.join(__dirname, '../../uploads');
+const BUCKET = 'documents';
+
+const toApiDocument = (doc) => ({
+  id: doc.id,
+  _id: doc.id, // alias de compatibilidad: el frontend aun referencia _id (estilo Mongo) en varias vistas
+  code: doc.code,
+  title: doc.title,
+  filename: doc.storage_path,
+  originalName: doc.original_name,
+  mimetype: doc.mimetype,
+  size: doc.size_bytes,
+  type: doc.type,
+  category: doc.category,
+  clause: doc.clause,
+  responsible: doc.responsible,
+  description: doc.description,
+  status: doc.status,
+  uploadedBy: doc.uploaded_by,
+  expiryDate: doc.expiry_date,
+  createdAt: doc.created_at,
+  updatedAt: doc.updated_at,
+});
 
 const resolveDocumentFields = (req) => {
   const uploadedFile = req.file;
   const body = req.body || {};
 
-  const storedFilename = uploadedFile?.filename || body.filename;
-  const originalName = uploadedFile?.originalname || body.originalName || body.title || body.filename;
-  const title = body.title || body.name || body.filename || originalName;
+  const originalName = uploadedFile?.originalname || body.originalName || body.title || 'documento';
+  const title = body.title || body.name || originalName;
   const type = body.type || body.category || 'Documento';
   const clause = body.clause || body.clausula || '';
   const responsible = body.responsible || body.resp || '';
@@ -20,48 +39,72 @@ const resolveDocumentFields = (req) => {
   return {
     code: body.code || '',
     title,
-    filename: storedFilename,
     originalName,
-    mimetype: uploadedFile?.mimetype || body.mimetype || 'application/octet-stream',
-    size: uploadedFile?.size || (body.size ? Number(body.size) : 0),
+    mimetype: uploadedFile?.mimetype || 'application/octet-stream',
+    size: uploadedFile?.size || 0,
     type,
     category: body.category || type,
     clause,
     responsible,
     description: body.description || '',
     expiryDate,
-    url: storedFilename ? `/uploads/${storedFilename}` : null
   };
 };
 
 const createDocument = async (req, res) => {
   try {
     const uploadedBy = req.user.id;
-    const payload = resolveDocumentFields(req);
 
-    if (!payload.filename || !payload.originalName) {
+    if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'Archivo y nombre de archivo requeridos',
+        message: 'Archivo requerido',
         code: 'MISSING_FILENAME'
       });
     }
 
-    const document = new Document({
-      ...payload,
-      uploadedBy,
-      expiryDate: payload.expiryDate ? new Date(payload.expiryDate) : null,
-      status: 'Vigente'
-    });
+    const payload = resolveDocumentFields(req);
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `${uploadedBy}/${randomUUID()}-${safeName}`;
 
-    await document.save();
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from(BUCKET)
+      .upload(storagePath, req.file.buffer, { contentType: payload.mimetype, upsert: false });
 
-    logger.info(`Documento creado: ${document.filename} por usuario ${uploadedBy}`);
+    if (uploadError) throw uploadError;
+
+    const { data: document, error: insertError } = await supabaseAdmin
+      .from('documents')
+      .insert({
+        code: payload.code,
+        title: payload.title,
+        original_name: payload.originalName,
+        storage_path: storagePath,
+        mimetype: payload.mimetype,
+        size_bytes: payload.size,
+        type: payload.type,
+        category: payload.category,
+        clause: payload.clause,
+        responsible: payload.responsible,
+        description: payload.description,
+        uploaded_by: uploadedBy,
+        expiry_date: payload.expiryDate,
+        status: 'vigente'
+      })
+      .select('*')
+      .single();
+
+    if (insertError) {
+      await supabaseAdmin.storage.from(BUCKET).remove([storagePath]);
+      throw insertError;
+    }
+
+    logger.info(`Documento creado: ${document.storage_path} por usuario ${uploadedBy}`);
 
     res.status(201).json({
       success: true,
       message: 'Documento cargado exitosamente',
-      data: { document }
+      data: { document: toApiDocument(document) }
     });
   } catch (error) {
     logger.error('Error al crear documento:', error);
@@ -77,39 +120,34 @@ const getDocuments = async (req, res) => {
   try {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = Math.min(parseInt(req.query.limit, 10) || 10, 100);
-    const skip = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    const filter = {};
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.category) filter.category = req.query.category;
+    let query = supabaseAdmin
+      .from('documents')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (req.query.status) query = query.eq('status', req.query.status);
+    if (req.query.category) query = query.eq('category', req.query.category);
     if (req.query.search) {
-      filter.$or = [
-        { code: { $regex: req.query.search, $options: 'i' } },
-        { title: { $regex: req.query.search, $options: 'i' } },
-        { filename: { $regex: req.query.search, $options: 'i' } },
-        { originalName: { $regex: req.query.search, $options: 'i' } }
-      ];
+      query = query.or(`code.ilike.%${req.query.search}%,title.ilike.%${req.query.search}%,original_name.ilike.%${req.query.search}%`);
     }
 
-    const [documents, total] = await Promise.all([
-      Document.find(filter)
-        .populate('uploadedBy', '-password')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Document.countDocuments(filter)
-    ]);
+    const { data: documents, count, error } = await query;
+    if (error) throw error;
 
     res.json({
       success: true,
       message: 'Documentos obtenidos exitosamente',
       data: {
-        documents,
+        documents: documents.map(toApiDocument),
         pagination: {
           page,
           limit,
-          total,
-          pages: Math.ceil(total / limit)
+          total: count || 0,
+          pages: Math.ceil((count || 0) / limit)
         }
       }
     });
@@ -125,8 +163,13 @@ const getDocuments = async (req, res) => {
 
 const getDocumentById = async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id).populate('uploadedBy', '-password');
+    const { data: document, error } = await supabaseAdmin
+      .from('documents')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle();
 
+    if (error) throw error;
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -135,10 +178,7 @@ const getDocumentById = async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      data: { document }
-    });
+    res.json({ success: true, data: { document: toApiDocument(document) } });
   } catch (error) {
     logger.error('Error al obtener documento:', error);
     res.status(500).json({
@@ -153,23 +193,25 @@ const updateDocument = async (req, res) => {
   try {
     const { code, title, type, category, clause, responsible, description, expiryDate, vigencia, status } = req.body;
 
-    const document = await Document.findByIdAndUpdate(
-      req.params.id,
-      {
-        code,
-        title,
-        type,
-        category,
-        clause,
-        responsible,
-        description,
-        expiryDate: (expiryDate || vigencia) ? new Date(expiryDate || vigencia) : undefined,
-        status,
-        updatedAt: new Date()
-      },
-      { new: true, runValidators: true }
-    );
+    const updateData = {};
+    if (code !== undefined) updateData.code = code;
+    if (title !== undefined) updateData.title = title;
+    if (type !== undefined) updateData.type = type;
+    if (category !== undefined) updateData.category = category;
+    if (clause !== undefined) updateData.clause = clause;
+    if (responsible !== undefined) updateData.responsible = responsible;
+    if (description !== undefined) updateData.description = description;
+    if (status !== undefined) updateData.status = status;
+    if (expiryDate || vigencia) updateData.expiry_date = expiryDate || vigencia;
 
+    const { data: document, error } = await supabaseAdmin
+      .from('documents')
+      .update(updateData)
+      .eq('id', req.params.id)
+      .select('*')
+      .maybeSingle();
+
+    if (error) throw error;
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -178,12 +220,12 @@ const updateDocument = async (req, res) => {
       });
     }
 
-    logger.info(`Documento actualizado: ${document.filename}`);
+    logger.info(`Documento actualizado: ${document.storage_path}`);
 
     res.json({
       success: true,
       message: 'Documento actualizado exitosamente',
-      data: { document }
+      data: { document: toApiDocument(document) }
     });
   } catch (error) {
     logger.error('Error al actualizar documento:', error);
@@ -197,8 +239,14 @@ const updateDocument = async (req, res) => {
 
 const deleteDocument = async (req, res) => {
   try {
-    const document = await Document.findByIdAndDelete(req.params.id);
+    const { data: document, error } = await supabaseAdmin
+      .from('documents')
+      .delete()
+      .eq('id', req.params.id)
+      .select('*')
+      .maybeSingle();
 
+    if (error) throw error;
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -207,17 +255,11 @@ const deleteDocument = async (req, res) => {
       });
     }
 
-    const filePath = path.join(uploadsDir, document.filename);
-    if (document.filename && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    await supabaseAdmin.storage.from(BUCKET).remove([document.storage_path]);
 
-    logger.info(`Documento eliminado: ${document.filename}`);
+    logger.info(`Documento eliminado: ${document.storage_path}`);
 
-    res.json({
-      success: true,
-      message: 'Documento eliminado exitosamente'
-    });
+    res.json({ success: true, message: 'Documento eliminado exitosamente' });
   } catch (error) {
     logger.error('Error al eliminar documento:', error);
     res.status(500).json({
@@ -228,33 +270,44 @@ const deleteDocument = async (req, res) => {
   }
 };
 
+const streamDocument = async (req, res, disposition) => {
+  const { data: document, error } = await supabaseAdmin
+    .from('documents')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!document) {
+    return res.status(404).json({
+      success: false,
+      message: 'Documento no encontrado',
+      code: 'DOCUMENT_NOT_FOUND'
+    });
+  }
+
+  const { data: fileBlob, error: downloadError } = await supabaseAdmin.storage
+    .from(BUCKET)
+    .download(document.storage_path);
+
+  if (downloadError || !fileBlob) {
+    return res.status(404).json({
+      success: false,
+      message: 'Archivo no encontrado en el almacenamiento',
+      code: 'FILE_NOT_FOUND'
+    });
+  }
+
+  const buffer = Buffer.from(await fileBlob.arrayBuffer());
+  res.setHeader('Content-Disposition', `${disposition}; filename="${document.original_name}"`);
+  res.setHeader('Content-Type', document.mimetype || 'application/octet-stream');
+  res.send(buffer);
+};
+
 const downloadDocument = async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id);
-
-    if (!document) {
-      return res.status(404).json({
-        success: false,
-        message: 'Documento no encontrado',
-        code: 'DOCUMENT_NOT_FOUND'
-      });
-    }
-
-    const filePath = path.join(uploadsDir, document.filename);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        success: false,
-        message: 'Archivo no encontrado en el servidor',
-        code: 'FILE_NOT_FOUND'
-      });
-    }
-
-    res.setHeader('Content-Disposition', `attachment; filename="${document.originalName}"`);
-    res.setHeader('Content-Type', document.mimetype);
-
-    fs.createReadStream(filePath).pipe(res);
-    logger.info(`Documento descargado: ${document.filename}`);
+    await streamDocument(req, res, 'attachment');
+    logger.info(`Documento descargado: ${req.params.id}`);
   } catch (error) {
     logger.error('Error al descargar documento:', error);
     res.status(500).json({
@@ -267,31 +320,8 @@ const downloadDocument = async (req, res) => {
 
 const viewDocument = async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id);
-
-    if (!document) {
-      return res.status(404).json({
-        success: false,
-        message: 'Documento no encontrado',
-        code: 'DOCUMENT_NOT_FOUND'
-      });
-    }
-
-    const filePath = path.join(uploadsDir, document.filename);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        success: false,
-        message: 'Archivo no encontrado en el servidor',
-        code: 'FILE_NOT_FOUND'
-      });
-    }
-
-    res.setHeader('Content-Disposition', `inline; filename="${document.originalName}"`);
-    res.setHeader('Content-Type', document.mimetype);
-
-    fs.createReadStream(filePath).pipe(res);
-    logger.info(`Documento visualizado: ${document.filename}`);
+    await streamDocument(req, res, 'inline');
+    logger.info(`Documento visualizado: ${req.params.id}`);
   } catch (error) {
     logger.error('Error al visualizar documento:', error);
     res.status(500).json({

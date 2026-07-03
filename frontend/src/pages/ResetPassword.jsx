@@ -13,8 +13,8 @@ export default function ResetPassword() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     
-    if (password.length < 6) {
-      toast('La contraseña debe tener al menos 6 caracteres', 'warn')
+    if (password.length < 8) {
+      toast('La contraseña debe tener al menos 8 caracteres', 'warn')
       return
     }
 
@@ -49,7 +49,7 @@ export default function ResetPassword() {
                <input 
                   type="password" 
                   className="finput" 
-                  placeholder="Min. 6 caracteres" 
+                  placeholder="Min. 8 caracteres"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required 

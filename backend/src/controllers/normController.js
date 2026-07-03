@@ -1,8 +1,7 @@
-const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 
-// Schema para normas ISO (en memoria de demostración)
-// En producción, esto sería una colección MongoDB
+// Estructura fija de referencia de la norma ISO 9001:2015 (no es dato de
+// ejemplo del negocio: es el índice de cláusulas de la norma en sí).
 const getNormStructure = () => ({
   id: 'ISO-9001-2015',
   name: 'ISO 9001:2015',

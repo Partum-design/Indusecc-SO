@@ -1,47 +1,53 @@
-const jwt = require('jsonwebtoken')
-const User = require('../models/User')
-const { JWT_SECRET } = require('../config/environment')
+const { supabaseAdmin, supabaseAuth } = require('../config/supabaseClient')
+const { FRONTEND_URL } = require('../config/environment')
 const logger = require('../utils/logger')
+const sendEmail = require('../utils/email')
 
-const registerUser = async (req, res) => {
-  try {
-    // Este endpoint está deprecado. Usar POST /api/registration/request en su lugar
-    return res.status(410).json({
-      success: false,
-      message: 'Este endpoint está deprecado. Use POST /api/registration/request',
-      code: 'DEPRECATED_ENDPOINT',
-      newEndpoint: 'POST /api/registration/request'
-    });
-  } catch (error) {
-    logger.error('Error:', error);
-  }
+const registerUser = async (_req, res) => {
+  return res.status(410).json({
+    success: false,
+    message: 'Este endpoint está deprecado. Use POST /api/registration/request',
+    code: 'DEPRECATED_ENDPOINT',
+    newEndpoint: 'POST /api/registration/request'
+  });
 }
 
 const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body
-    const user = await User.findOne({ email })
 
-    if (!user || !(await user.comparePassword(password))) {
+    const { data: authData, error: authError } = await supabaseAuth.auth.signInWithPassword({ email, password })
+    if (authError || !authData?.session) {
       return res.status(401).json({ message: 'Credenciales incorrectas' })
     }
 
-    if (!user.active) {
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, email, role, active')
+      .eq('id', authData.user.id)
+      .single()
+
+    if (profileError || !profile) {
+      return res.status(401).json({ message: 'Credenciales incorrectas' })
+    }
+
+    if (!profile.active) {
       return res.status(403).json({ message: 'Usuario desactivado' })
     }
 
-    const token = jwt.sign(
-      { id: user._id, role: user.role, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '1h' }
-    )
+    await supabaseAdmin
+      .from('profiles')
+      .update({ last_login_at: new Date().toISOString() })
+      .eq('id', profile.id)
 
     res.json({
       message: 'Login exitoso',
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
-      token,
+      user: { id: profile.id, name: profile.name, email: profile.email, role: profile.role.toUpperCase() },
+      token: authData.session.access_token,
+      refreshToken: authData.session.refresh_token,
     })
   } catch (error) {
+    logger.error('Error en login:', error)
     res.status(500).json({ message: 'Error en el servidor' })
   }
 }
@@ -59,7 +65,6 @@ const uploadFile = async (req, res) => {
       })
     }
 
-    // Validar tamaño máximo (10MB)
     const fileSizeBytes = Buffer.byteLength(file, 'utf8')
     const maxSize = 10 * 1024 * 1024
     if (fileSizeBytes > maxSize) {
@@ -94,45 +99,48 @@ const uploadFile = async (req, res) => {
   }
 }
 
-const crypto = require('crypto')
-const sendEmail = require('../utils/email')
-
+// Recuperación de contraseña: usamos Supabase Auth como fuente de verdad (nunca
+// se genera ni se guarda una contraseña temporal en texto plano). Supabase emite
+// un token de un solo uso; nosotros mandamos el correo con nuestra propia marca
+// apuntando a nuestro frontend, y luego intercambiamos ese token por la sesión.
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email });
 
-    if (!user) {
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, email')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (!profile) {
       return res.status(404).json({ message: 'No hay usuario con ese correo' });
     }
 
-    // Generar token
-    const resetToken = crypto.randomBytes(20).toString('hex');
-    
-    user.resetPasswordToken = crypto
-      .createHash('sha256')
-      .update(resetToken)
-      .digest('hex');
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+    });
 
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutos
+    if (linkError || !linkData?.properties?.hashed_token) {
+      logger.error('Error al generar link de recuperación:', linkError);
+      return res.status(500).json({ message: 'No se pudo generar el enlace de recuperación' });
+    }
 
-    await user.save();
-
-    // Link para el frontend
-    // En producción esto debería venir de una variable de entorno
-    const resetUrl = `http://localhost:5173/reset-password/${resetToken}`;
+    const resetToken = linkData.properties.hashed_token;
+    const resetUrl = `${FRONTEND_URL}/reset-password/${resetToken}`;
 
     const message = `Has solicitado restablecer tu contraseña en Indusecc SGC.\n\nPor favor haz clic en el siguiente enlace:\n\n${resetUrl}\n\nSi no solicitaste esto, ignora este correo.`;
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
         <h2 style="color: #8B0000; border-bottom: 2px solid #D4AF37; padding-bottom: 10px;">Recuperación de Contraseña</h2>
-        <p>Hola, <strong>${user.name}</strong>.</p>
+        <p>Hola, <strong>${profile.name}</strong>.</p>
         <p>Has solicitado restablecer tu contraseña en nuestra plataforma <strong>Indusecc SGC</strong>.</p>
         <div style="text-align: center; margin: 30px 0;">
           <a href="${resetUrl}" style="background-color: #8B0000; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Restablecer Contraseña</a>
         </div>
-        <p style="font-size: 0.8em; color: #666;">Este enlace expirará en 10 minutos. Si el botón no funciona, copia y pega este enlace en tu navegador:</p>
+        <p style="font-size: 0.8em; color: #666;">Este enlace es de un solo uso. Si el botón no funciona, copia y pega este enlace en tu navegador:</p>
         <p style="font-size: 0.8em; color: #666; word-break: break-all;">${resetUrl}</p>
         <hr />
         <p style="font-size: 0.7em; color: #999;">Indusecc SGC - Sistema de Gestión de Calidad</p>
@@ -141,25 +149,20 @@ const forgotPassword = async (req, res) => {
 
     try {
       await sendEmail({
-        email: user.email,
+        email: profile.email,
         subject: 'Recuperación de Contraseña - Indusecc SGC',
-        message: message,
-        html: html
+        message,
+        html
       });
 
       res.status(200).json({
         success: true,
         data: 'Se ha enviado un enlace de recuperación a su correo electrónico.'
       });
-
     } catch (err) {
       logger.error('Error al enviar el correo:', err);
-      user.resetPasswordToken = undefined;
-      user.resetPasswordExpire = undefined;
-      await user.save();
       return res.status(500).json({ message: 'No se pudo enviar el correo, intente más tarde' });
     }
-
   } catch (error) {
     logger.error('Error in forgotPassword:', error);
     res.status(500).json({ message: 'Error al procesar la solicitud' });
@@ -171,32 +174,29 @@ const resetPassword = async (req, res) => {
     const { password } = req.body;
     const { token } = req.params;
 
-    const resetPasswordToken = crypto
-      .createHash('sha256')
-      .update(token)
-      .digest('hex');
+    if (!password || password.length < 8) {
+      return res.status(400).json({ message: 'La contraseña debe tener al menos 8 caracteres' });
+    }
 
-    const user = await User.findOne({
-      resetPasswordToken,
-      resetPasswordExpire: { $gt: Date.now() },
+    const { data: otpData, error: otpError } = await supabaseAuth.auth.verifyOtp({
+      type: 'recovery',
+      token_hash: token,
     });
 
-    if (!user) {
+    if (otpError || !otpData?.user) {
       return res.status(400).json({ message: 'Token inválido o expirado' });
     }
 
-    // Cambiar contraseña
-    user.password = password;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
-
-    await user.save();
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(otpData.user.id, { password });
+    if (updateError) {
+      logger.error('Error al actualizar contraseña:', updateError);
+      return res.status(500).json({ message: 'Error al restablecer contraseña' });
+    }
 
     res.status(200).json({
       success: true,
       message: 'Contraseña actualizada exitosamente',
     });
-
   } catch (error) {
     logger.error('Error in resetPassword:', error);
     res.status(500).json({ message: 'Error al restablecer contraseña' });
@@ -204,4 +204,3 @@ const resetPassword = async (req, res) => {
 };
 
 module.exports = { loginUser, uploadFile, registerUser, forgotPassword, resetPassword }
-

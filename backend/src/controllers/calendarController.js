@@ -1,5 +1,44 @@
-const Calendar = require('../models/Calendar');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
+
+// El enum calendar_type de la base solo acepta: auditoria, capacitacion, reunion, otro.
+// El frontend (CalendarioAdmin.jsx) también ofrece "Vencimiento" y "Revisión", que
+// nunca existieron en el enum original de Mongoose tampoco — se guardan como "otro"
+// para no romper la creación de eventos, y se conserva el título original para
+// que el usuario siga viendo el texto que escribió.
+const TYPE_TO_DB = {
+  'Auditoría': 'auditoria',
+  'Capacitación': 'capacitacion',
+  'Reunión': 'reunion',
+  'Otro': 'otro',
+  'Vencimiento': 'otro',
+  'Revisión': 'otro',
+};
+const TYPE_TO_API = {
+  auditoria: 'Auditoría',
+  capacitacion: 'Capacitación',
+  reunion: 'Reunión',
+  otro: 'Otro',
+};
+
+const toApiCalendar = (row) => ({
+  id: row.id,
+  _id: row.id,
+  title: row.title,
+  description: row.description,
+  date: row.date,
+  type: TYPE_TO_API[row.type] || row.type,
+  assignedTo: row.assigned_to_profile
+    ? { _id: row.assigned_to_profile.id, id: row.assigned_to_profile.id, name: row.assigned_to_profile.name, email: row.assigned_to_profile.email }
+    : row.assigned_to,
+  createdBy: row.created_by_profile
+    ? { _id: row.created_by_profile.id, id: row.created_by_profile.id, name: row.created_by_profile.name, email: row.created_by_profile.email }
+    : row.created_by,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const SELECT_WITH_PROFILES = '*, assigned_to_profile:profiles!calendar_events_assigned_to_fkey(id, name, email), created_by_profile:profiles!calendar_events_created_by_fkey(id, name, email)';
 
 // Crear evento de calendario
 const createCalendar = async (req, res) => {
@@ -7,34 +46,27 @@ const createCalendar = async (req, res) => {
     const { title, description, date, type, assignedTo } = req.body;
     const createdBy = req.user.id;
 
-    const calendar = new Calendar({
-      title,
-      description,
-      date: new Date(date),
-      type,
-      assignedTo,
-      createdBy
-    });
+    const { data: calendar, error } = await supabaseAdmin
+      .from('calendar_events')
+      .insert({
+        title,
+        description,
+        date,
+        type: TYPE_TO_DB[type] || 'otro',
+        assigned_to: assignedTo || null,
+        created_by: createdBy
+      })
+      .select('*')
+      .single();
 
-    await calendar.save();
+    if (error) throw error;
 
     logger.info(`Evento de calendario creado: ${title} por ${req.user.email}`);
 
     res.status(201).json({
       success: true,
       message: 'Evento de calendario creado exitosamente',
-      data: {
-        calendar: {
-          id: calendar._id,
-          title: calendar.title,
-          description: calendar.description,
-          date: calendar.date,
-          type: calendar.type,
-          assignedTo: calendar.assignedTo,
-          createdBy: calendar.createdBy,
-          createdAt: calendar.createdAt,
-        }
-      }
+      data: { calendar: toApiCalendar(calendar) }
     });
   } catch (error) {
     logger.error('Error al crear evento de calendario:', error);
@@ -51,61 +83,43 @@ const getCalendars = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 10, 100);
-    const skip = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    // Filtros
-    const filter = {};
-    if (req.query.type) filter.type = req.query.type;
-    if (req.query.assignedTo) filter.assignedTo = req.query.assignedTo;
+    let query = supabaseAdmin
+      .from('calendar_events')
+      .select(SELECT_WITH_PROFILES, { count: 'exact' })
+      .order('date', { ascending: true })
+      .range(from, to);
+
+    if (req.query.type) query = query.eq('type', TYPE_TO_DB[req.query.type] || req.query.type);
+    if (req.query.assignedTo) query = query.eq('assigned_to', req.query.assignedTo);
     if (req.query.search) {
-      filter.$or = [
-        { title: { $regex: req.query.search, $options: 'i' } },
-        { description: { $regex: req.query.search, $options: 'i' } }
-      ];
+      query = query.or(`title.ilike.%${req.query.search}%,description.ilike.%${req.query.search}%`);
     }
+    if (req.query.startDate) query = query.gte('date', req.query.startDate);
+    if (req.query.endDate) query = query.lte('date', req.query.endDate);
 
-    // Filtro de fecha
-    if (req.query.startDate && req.query.endDate) {
-      filter.date = {
-        $gte: new Date(req.query.startDate),
-        $lte: new Date(req.query.endDate)
-      };
-    } else if (req.query.startDate) {
-      filter.date = { $gte: new Date(req.query.startDate) };
-    } else if (req.query.endDate) {
-      filter.date = { $lte: new Date(req.query.endDate) };
-    }
-
-    // Aplicar filtros de permisos
+    // Filtros de permisos (igual que antes: admin/super_admin ven todo)
     if (req.user.role === 'CONSULTOR') {
-      filter.$or = [
-        { createdBy: req.user.id },
-        { assignedTo: req.user.id }
-      ];
+      query = query.or(`created_by.eq.${req.user.id},assigned_to.eq.${req.user.id}`);
     } else if (req.user.role === 'COLABORADOR') {
-      filter.assignedTo = req.user.id;
+      query = query.eq('assigned_to', req.user.id);
     }
 
-    const [calendars, total] = await Promise.all([
-      Calendar.find(filter)
-        .populate('assignedTo', 'name email')
-        .populate('createdBy', 'name email')
-        .sort({ date: 1 })
-        .skip(skip)
-        .limit(limit),
-      Calendar.countDocuments(filter)
-    ]);
+    const { data: calendars, count, error } = await query;
+    if (error) throw error;
 
     res.json({
       success: true,
       message: 'Eventos de calendario obtenidos exitosamente',
       data: {
-        calendars,
+        calendars: calendars.map(toApiCalendar),
         pagination: {
           page,
           limit,
-          total,
-          pages: Math.ceil(total / limit)
+          total: count || 0,
+          pages: Math.ceil((count || 0) / limit)
         }
       }
     });
@@ -122,10 +136,13 @@ const getCalendars = async (req, res) => {
 // Obtener evento de calendario por ID
 const getCalendarById = async (req, res) => {
   try {
-    const calendar = await Calendar.findById(req.params.id)
-      .populate('assignedTo', 'name email')
-      .populate('createdBy', 'name email');
+    const { data: calendar, error } = await supabaseAdmin
+      .from('calendar_events')
+      .select(SELECT_WITH_PROFILES)
+      .eq('id', req.params.id)
+      .maybeSingle();
 
+    if (error) throw error;
     if (!calendar) {
       return res.status(404).json({
         success: false,
@@ -134,10 +151,9 @@ const getCalendarById = async (req, res) => {
       });
     }
 
-    // Verificar permisos
     if (req.user.role === 'CONSULTOR' &&
-        calendar.createdBy._id.toString() !== req.user.id &&
-        calendar.assignedTo?._id.toString() !== req.user.id) {
+        calendar.created_by !== req.user.id &&
+        calendar.assigned_to !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para ver este evento',
@@ -145,7 +161,7 @@ const getCalendarById = async (req, res) => {
       });
     }
 
-    if (req.user.role === 'COLABORADOR' && calendar.assignedTo?._id.toString() !== req.user.id) {
+    if (req.user.role === 'COLABORADOR' && calendar.assigned_to !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para ver este evento',
@@ -156,7 +172,7 @@ const getCalendarById = async (req, res) => {
     res.json({
       success: true,
       message: 'Evento de calendario obtenido exitosamente',
-      data: { calendar }
+      data: { calendar: toApiCalendar(calendar) }
     });
   } catch (error) {
     logger.error('Error al obtener evento de calendario:', error);
@@ -172,24 +188,15 @@ const getCalendarById = async (req, res) => {
 const updateCalendar = async (req, res) => {
   try {
     const { title, description, date, type, assignedTo } = req.body;
-    const updateData = {};
 
-    if (title !== undefined) updateData.title = title;
-    if (description !== undefined) updateData.description = description;
-    if (date !== undefined) updateData.date = new Date(date);
-    if (type !== undefined) updateData.type = type;
-    if (assignedTo !== undefined) updateData.assignedTo = assignedTo;
-    updateData.updatedAt = new Date();
+    const { data: existing, error: fetchError } = await supabaseAdmin
+      .from('calendar_events')
+      .select('created_by')
+      .eq('id', req.params.id)
+      .maybeSingle();
 
-    const calendar = await Calendar.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate('assignedTo', 'name email')
-      .populate('createdBy', 'name email');
-
-    if (!calendar) {
+    if (fetchError) throw fetchError;
+    if (!existing) {
       return res.status(404).json({
         success: false,
         message: 'Evento de calendario no encontrado',
@@ -197,8 +204,7 @@ const updateCalendar = async (req, res) => {
       });
     }
 
-    // Verificar permisos
-    if (req.user.role === 'CONSULTOR' && calendar.createdBy._id.toString() !== req.user.id) {
+    if (req.user.role === 'CONSULTOR' && existing.created_by !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para actualizar este evento',
@@ -206,12 +212,28 @@ const updateCalendar = async (req, res) => {
       });
     }
 
+    const updateData = {};
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (date !== undefined) updateData.date = date;
+    if (type !== undefined) updateData.type = TYPE_TO_DB[type] || type;
+    if (assignedTo !== undefined) updateData.assigned_to = assignedTo || null;
+
+    const { data: calendar, error: updateError } = await supabaseAdmin
+      .from('calendar_events')
+      .update(updateData)
+      .eq('id', req.params.id)
+      .select(SELECT_WITH_PROFILES)
+      .single();
+
+    if (updateError) throw updateError;
+
     logger.info(`Evento de calendario actualizado: ${calendar.title} por ${req.user.email}`);
 
     res.json({
       success: true,
       message: 'Evento de calendario actualizado exitosamente',
-      data: { calendar }
+      data: { calendar: toApiCalendar(calendar) }
     });
   } catch (error) {
     logger.error('Error al actualizar evento de calendario:', error);
@@ -226,8 +248,13 @@ const updateCalendar = async (req, res) => {
 // Eliminar evento de calendario
 const deleteCalendar = async (req, res) => {
   try {
-    const calendar = await Calendar.findById(req.params.id);
+    const { data: calendar, error: fetchError } = await supabaseAdmin
+      .from('calendar_events')
+      .select('id, title, created_by')
+      .eq('id', req.params.id)
+      .maybeSingle();
 
+    if (fetchError) throw fetchError;
     if (!calendar) {
       return res.status(404).json({
         success: false,
@@ -236,8 +263,7 @@ const deleteCalendar = async (req, res) => {
       });
     }
 
-    // Verificar permisos
-    if (req.user.role === 'CONSULTOR' && calendar.createdBy.toString() !== req.user.id) {
+    if (req.user.role === 'CONSULTOR' && calendar.created_by !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para eliminar este evento',
@@ -245,14 +271,15 @@ const deleteCalendar = async (req, res) => {
       });
     }
 
-    await Calendar.findByIdAndDelete(req.params.id);
+    const { error: deleteError } = await supabaseAdmin.from('calendar_events').delete().eq('id', req.params.id);
+    if (deleteError) throw deleteError;
 
     logger.info(`Evento de calendario eliminado: ${calendar.title} por ${req.user.email}`);
 
     res.json({
       success: true,
       message: 'Evento de calendario eliminado exitosamente',
-      data: { deletedCalendar: { id: calendar._id, title: calendar.title } }
+      data: { deletedCalendar: { id: calendar.id, title: calendar.title } }
     });
   } catch (error) {
     logger.error('Error al eliminar evento de calendario:', error);
@@ -269,9 +296,14 @@ const assignCalendar = async (req, res) => {
   try {
     const { assignedTo } = req.body;
 
-    const calendar = await Calendar.findById(req.params.id);
+    const { data: existing, error: fetchError } = await supabaseAdmin
+      .from('calendar_events')
+      .select('id, title, created_by')
+      .eq('id', req.params.id)
+      .maybeSingle();
 
-    if (!calendar) {
+    if (fetchError) throw fetchError;
+    if (!existing) {
       return res.status(404).json({
         success: false,
         message: 'Evento de calendario no encontrado',
@@ -279,8 +311,7 @@ const assignCalendar = async (req, res) => {
       });
     }
 
-    // Verificar permisos
-    if (req.user.role === 'CONSULTOR' && calendar.createdBy.toString() !== req.user.id) {
+    if (req.user.role === 'CONSULTOR' && existing.created_by !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'No tienes permisos para asignar este evento',
@@ -288,19 +319,21 @@ const assignCalendar = async (req, res) => {
       });
     }
 
-    calendar.assignedTo = assignedTo;
-    calendar.updatedAt = new Date();
-    await calendar.save();
+    const { data: calendar, error: updateError } = await supabaseAdmin
+      .from('calendar_events')
+      .update({ assigned_to: assignedTo || null })
+      .eq('id', req.params.id)
+      .select(SELECT_WITH_PROFILES)
+      .single();
 
-    await calendar.populate('assignedTo', 'name email');
-    await calendar.populate('createdBy', 'name email');
+    if (updateError) throw updateError;
 
-    logger.info(`Evento de calendario asignado: ${calendar.title} -> ${calendar.assignedTo?.name || 'Sin asignar'} por ${req.user.email}`);
+    logger.info(`Evento de calendario asignado: ${calendar.title} -> ${calendar.assigned_to_profile?.name || 'Sin asignar'} por ${req.user.email}`);
 
     res.json({
       success: true,
       message: 'Evento de calendario asignado exitosamente',
-      data: { calendar }
+      data: { calendar: toApiCalendar(calendar) }
     });
   } catch (error) {
     logger.error('Error al asignar evento de calendario:', error);
@@ -315,48 +348,36 @@ const assignCalendar = async (req, res) => {
 // Estadísticas de calendario
 const getCalendarStats = async (req, res) => {
   try {
-    const stats = await Calendar.aggregate([
-      {
-        $group: {
-          _id: '$type',
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { count: -1 }
-      }
-    ]);
+    const { data: allEvents, error } = await supabaseAdmin
+      .from('calendar_events')
+      .select('type, date');
 
-    const totalEvents = await Calendar.countDocuments();
-    const upcomingEvents = await Calendar.countDocuments({
-      date: { $gte: new Date() }
+    if (error) throw error;
+
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().slice(0, 10);
+    const nextMonthEnd = new Date(now.getFullYear(), now.getMonth() + 2, 1).toISOString().slice(0, 10);
+
+    const byTypeMap = {};
+    allEvents.forEach(e => {
+      byTypeMap[e.type] = (byTypeMap[e.type] || 0) + 1;
     });
-    const pastEvents = await Calendar.countDocuments({
-      date: { $lt: new Date() }
-    });
-    const thisMonthEvents = await Calendar.countDocuments({
-      date: {
-        $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
-        $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
-      }
-    });
-    const nextMonthEvents = await Calendar.countDocuments({
-      date: {
-        $gte: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
-        $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 2, 1)
-      }
-    });
+    const byType = Object.entries(byTypeMap)
+      .map(([type, count]) => ({ _id: TYPE_TO_API[type] || type, count }))
+      .sort((a, b) => b.count - a.count);
 
     res.json({
       success: true,
       message: 'Estadísticas de calendario obtenidas exitosamente',
       data: {
-        totalEvents,
-        upcomingEvents,
-        pastEvents,
-        thisMonthEvents,
-        nextMonthEvents,
-        byType: stats
+        totalEvents: allEvents.length,
+        upcomingEvents: allEvents.filter(e => e.date >= todayStr).length,
+        pastEvents: allEvents.filter(e => e.date < todayStr).length,
+        thisMonthEvents: allEvents.filter(e => e.date >= thisMonthStart && e.date < nextMonthStart).length,
+        nextMonthEvents: allEvents.filter(e => e.date >= nextMonthStart && e.date < nextMonthEnd).length,
+        byType
       }
     });
   } catch (error) {

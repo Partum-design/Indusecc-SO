@@ -1,26 +1,59 @@
-const Training = require('../models/Training');
-const Certificate = require('../models/Certificate');
-const User = require('../models/User');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
+
+const TRAINING_STATUS_TO_DB = { 'Pendiente': 'pendiente', 'En proceso': 'en_proceso', 'Completado': 'completado' };
+const TRAINING_STATUS_TO_API = { pendiente: 'Pendiente', en_proceso: 'En proceso', completado: 'Completado' };
+const CERT_STATUS_TO_API = { activo: 'Activo', expirado: 'Expirado', revocado: 'Revocado' };
+
+const toApiTraining = (t) => ({
+  id: t.id,
+  _id: t.id,
+  title: t.title,
+  module: t.module,
+  description: t.description,
+  status: TRAINING_STATUS_TO_API[t.status] || t.status,
+  progress: t.progress,
+  score: t.score,
+  startDate: t.start_date,
+  completionDate: t.completion_date,
+  scheduledDate: t.scheduled_date,
+  createdAt: t.created_at,
+});
+
+const toApiCertificate = (c) => ({
+  id: c.id,
+  _id: c.id,
+  title: c.title,
+  module: c.module,
+  score: c.score,
+  issueDate: c.issue_date,
+  expiryDate: c.expiry_date,
+  certificateNumber: c.certificate_number,
+  filePath: c.storage_path,
+  status: CERT_STATUS_TO_API[c.status] || c.status,
+});
 
 // Obtener capacitaciones del usuario actual
 const getUserTrainings = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const trainings = await Training.find({ assignedTo: userId })
-      .sort({ createdAt: -1 })
-      .populate('assignedTo', 'name email');
+    const { data: trainings, error } = await supabaseAdmin
+      .from('trainings')
+      .select('*')
+      .eq('assigned_to', userId)
+      .order('created_at', { ascending: false });
 
-    // Calcular estadísticas
+    if (error) throw error;
+
     const stats = {
-      completed: trainings.filter(t => t.status === 'Completado').length,
-      inProgress: trainings.filter(t => t.status === 'En proceso').length,
-      pending: trainings.filter(t => t.status === 'Pendiente').length,
+      completed: trainings.filter(t => t.status === 'completado').length,
+      inProgress: trainings.filter(t => t.status === 'en_proceso').length,
+      pending: trainings.filter(t => t.status === 'pendiente').length,
       averageScore: 0
     };
 
-    const completedTrainings = trainings.filter(t => t.status === 'Completado' && t.score);
+    const completedTrainings = trainings.filter(t => t.status === 'completado' && t.score);
     if (completedTrainings.length > 0) {
       stats.averageScore = Math.round(
         completedTrainings.reduce((sum, t) => sum + t.score, 0) / completedTrainings.length
@@ -30,18 +63,7 @@ const getUserTrainings = async (req, res) => {
     res.json({
       success: true,
       data: {
-        trainings: trainings.map(training => ({
-          _id: training._id,
-          title: training.title,
-          module: training.module,
-          status: training.status,
-          progress: training.progress,
-          score: training.score,
-          startDate: training.startDate,
-          completionDate: training.completionDate,
-          scheduledDate: training.scheduledDate,
-          createdAt: training.createdAt
-        })),
+        trainings: trainings.map(toApiTraining),
         stats
       }
     });
@@ -60,28 +82,18 @@ const getUserCertificates = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const certificates = await Certificate.find({
-      userId,
-      status: 'Activo'
-    })
-      .sort({ issueDate: -1 })
-      .populate('trainingId', 'title module');
+    const { data: certificates, error } = await supabaseAdmin
+      .from('certificates')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'activo')
+      .order('issue_date', { ascending: false });
+
+    if (error) throw error;
 
     res.json({
       success: true,
-      data: {
-        certificates: certificates.map(cert => ({
-          _id: cert._id,
-          title: cert.title,
-          module: cert.module,
-          score: cert.score,
-          issueDate: cert.issueDate,
-          expiryDate: cert.expiryDate,
-          certificateNumber: cert.certificateNumber,
-          filePath: cert.filePath,
-          status: cert.status
-        }))
-      }
+      data: { certificates: certificates.map(toApiCertificate) }
     });
   } catch (error) {
     logger.error('Error al obtener certificados del usuario:', error);
@@ -100,7 +112,14 @@ const updateTrainingProgress = async (req, res) => {
     const { progress, status } = req.body;
     const userId = req.user.id;
 
-    const training = await Training.findOne({ _id: id, assignedTo: userId });
+    const { data: training, error: fetchError } = await supabaseAdmin
+      .from('trainings')
+      .select('*')
+      .eq('id', id)
+      .eq('assigned_to', userId)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
     if (!training) {
       return res.status(404).json({
         success: false,
@@ -108,50 +127,51 @@ const updateTrainingProgress = async (req, res) => {
       });
     }
 
-    // Actualizar progreso
+    const updateData = {};
+
     if (progress !== undefined) {
-      training.progress = Math.min(100, Math.max(0, progress));
+      updateData.progress = Math.min(100, Math.max(0, progress));
     }
 
-    // Si el progreso llega a 100, marcar como completado
-    if (training.progress === 100 && training.status !== 'Completado') {
-      training.status = 'Completado';
-      training.completionDate = new Date();
-
-      // Generar certificado automáticamente
-      const certificate = new Certificate({
-        trainingId: training._id,
-        userId: training.assignedTo,
-        title: training.title,
-        module: training.module,
-        score: Math.floor(Math.random() * 15) + 85 // Score aleatorio entre 85-100
-      });
-
-      await certificate.save();
+    const willBeCompleted = (updateData.progress ?? training.progress) === 100 && training.status !== 'completado';
+    if (willBeCompleted) {
+      updateData.status = 'completado';
+      updateData.completion_date = new Date().toISOString().slice(0, 10);
+      updateData.score = Math.floor(Math.random() * 15) + 85; // Score entre 85-100
     }
 
     if (status) {
-      training.status = status;
-      if (status === 'En proceso' && !training.startDate) {
-        training.startDate = new Date();
+      updateData.status = TRAINING_STATUS_TO_DB[status] || status;
+      if (updateData.status === 'en_proceso' && !training.start_date) {
+        updateData.start_date = new Date().toISOString().slice(0, 10);
       }
     }
 
-    await training.save();
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from('trainings')
+      .update(updateData)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    if (willBeCompleted) {
+      const { error: certError } = await supabaseAdmin
+        .from('certificates')
+        .insert({
+          training_id: updated.id,
+          user_id: updated.assigned_to,
+          title: updated.title,
+          module: updated.module,
+          score: updated.score
+        });
+      if (certError) logger.error('Error al generar certificado automático:', certError);
+    }
 
     res.json({
       success: true,
-      data: {
-        training: {
-          _id: training._id,
-          title: training.title,
-          module: training.module,
-          status: training.status,
-          progress: training.progress,
-          score: training.score,
-          completionDate: training.completionDate
-        }
-      }
+      data: { training: toApiTraining(updated) }
     });
   } catch (error) {
     logger.error('Error al actualizar progreso de capacitación:', error);
@@ -163,18 +183,24 @@ const updateTrainingProgress = async (req, res) => {
   }
 };
 
-// Descargar certificado
+// Descargar certificado. El endpoint devuelve metadatos + URL de descarga (el
+// frontend actual solo lee response.data.success, no procesa un blob). Si el
+// certificado ya tiene un PDF real en Storage, se expone además una signed URL
+// temporal para descargarlo directamente desde el navegador.
 const downloadCertificate = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
 
-    const certificate = await Certificate.findOne({
-      _id: id,
-      userId,
-      status: 'Activo'
-    });
+    const { data: certificate, error } = await supabaseAdmin
+      .from('certificates')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .eq('status', 'activo')
+      .maybeSingle();
 
+    if (error) throw error;
     if (!certificate) {
       return res.status(404).json({
         success: false,
@@ -182,20 +208,27 @@ const downloadCertificate = async (req, res) => {
       });
     }
 
-    // Aquí iría la lógica para generar y enviar el PDF del certificado
-    // Por ahora, devolver información del certificado
+    let signedUrl = null;
+    if (certificate.storage_path) {
+      const { data: signed } = await supabaseAdmin.storage
+        .from('certificates')
+        .createSignedUrl(certificate.storage_path, 60);
+      signedUrl = signed?.signedUrl || null;
+    }
+
     res.json({
       success: true,
       data: {
         certificate: {
-          _id: certificate._id,
+          _id: certificate.id,
+          id: certificate.id,
           title: certificate.title,
           module: certificate.module,
           score: certificate.score,
-          issueDate: certificate.issueDate,
-          certificateNumber: certificate.certificateNumber
+          issueDate: certificate.issue_date,
+          certificateNumber: certificate.certificate_number
         },
-        downloadUrl: `/api/trainings/certificates/${certificate._id}/download`
+        downloadUrl: signedUrl || `/api/trainings/certificates/${certificate.id}/download`
       }
     });
   } catch (error) {
@@ -208,100 +241,9 @@ const downloadCertificate = async (req, res) => {
   }
 };
 
-// Crear capacitación de ejemplo (para desarrollo)
-const createSampleTrainings = async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    const sampleTrainings = [
-      {
-        title: 'Fundamentos ISO 9001:2015',
-        module: 'Módulo 1 — Contexto y Liderazgo',
-        assignedTo: userId,
-        status: 'Completado',
-        progress: 100,
-        score: 95,
-        completionDate: new Date('2026-01-15'),
-        scheduledDate: new Date('2026-01-15')
-      },
-      {
-        title: 'Gestión de Documentos SGC',
-        module: 'Módulo 2 — Control Documental',
-        assignedTo: userId,
-        status: 'Completado',
-        progress: 100,
-        score: 88,
-        completionDate: new Date('2026-02-28'),
-        scheduledDate: new Date('2026-02-28')
-      },
-      {
-        title: 'Auditorías Internas ISO',
-        module: 'Módulo 3 — Planificación',
-        assignedTo: userId,
-        status: 'En proceso',
-        progress: 65,
-        startDate: new Date(),
-        scheduledDate: new Date('2026-03-15')
-      },
-      {
-        title: 'Gestión de Riesgos y Oportunidades',
-        module: 'Módulo 4 — Cláusula 6.1',
-        assignedTo: userId,
-        status: 'Pendiente',
-        progress: 0,
-        scheduledDate: new Date('2026-04-15')
-      },
-      {
-        title: 'Mejora Continua y CAPA',
-        module: 'Módulo 5 — Cláusula 10',
-        assignedTo: userId,
-        status: 'Pendiente',
-        progress: 0,
-        scheduledDate: new Date('2026-05-05')
-      }
-    ];
-
-    // Eliminar capacitaciones existentes del usuario
-    await Training.deleteMany({ assignedTo: userId });
-
-    // Crear nuevas capacitaciones
-    const createdTrainings = await Training.insertMany(sampleTrainings);
-
-    // Crear certificados para las capacitaciones completadas
-    const completedTrainings = createdTrainings.filter(t => t.status === 'Completado');
-    for (const training of completedTrainings) {
-      const certificate = new Certificate({
-        trainingId: training._id,
-        userId: training.assignedTo,
-        title: training.title,
-        module: training.module,
-        score: training.score
-      });
-      await certificate.save();
-    }
-
-    res.json({
-      success: true,
-      message: 'Capacitaciones de ejemplo creadas exitosamente',
-      data: {
-        trainingsCount: createdTrainings.length,
-        certificatesCount: completedTrainings.length
-      }
-    });
-  } catch (error) {
-    logger.error('Error al crear capacitaciones de ejemplo:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al crear capacitaciones de ejemplo',
-      code: 'CREATE_SAMPLE_TRAININGS_ERROR'
-    });
-  }
-};
-
 module.exports = {
   getUserTrainings,
   getUserCertificates,
   updateTrainingProgress,
-  downloadCertificate,
-  createSampleTrainings
+  downloadCertificate
 };

@@ -1,14 +1,17 @@
-const Role = require('../models/Role');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
 
-// Crear rol
 const createRole = async (req, res) => {
   try {
     const { name, description, permissions } = req.body;
     const createdBy = req.user.id;
 
-    // Validar que el rol no exista
-    const existingRole = await Role.findOne({ name });
+    const { data: existingRole } = await supabaseAdmin
+      .from('custom_roles')
+      .select('id')
+      .eq('name', name)
+      .maybeSingle();
+
     if (existingRole) {
       return res.status(409).json({
         success: false,
@@ -17,29 +20,20 @@ const createRole = async (req, res) => {
       });
     }
 
-    const role = new Role({
-      name,
-      description,
-      permissions: permissions || [],
-      createdBy
-    });
+    const { data: role, error } = await supabaseAdmin
+      .from('custom_roles')
+      .insert({ name, description, permissions: permissions || [], created_by: createdBy })
+      .select('id, name, description, permissions, created_at')
+      .single();
 
-    await role.save();
+    if (error) throw error;
 
     logger.info(`Rol creado: ${name} por usuario ${createdBy}`);
 
     res.status(201).json({
       success: true,
       message: 'Rol creado exitosamente',
-      data: {
-        role: {
-          id: role._id,
-          name: role.name,
-          description: role.description,
-          permissions: role.permissions,
-          createdAt: role.createdAt
-        }
-      }
+      data: { role }
     });
   } catch (error) {
     logger.error('Error al crear rol:', error);
@@ -51,21 +45,20 @@ const createRole = async (req, res) => {
   }
 };
 
-// Obtener roles
 const getRoles = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 10, 100);
-    const skip = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    const [roles, total] = await Promise.all([
-      Role.find()
-        .populate('createdBy', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Role.countDocuments()
-    ]);
+    const { data: roles, count, error } = await supabaseAdmin
+      .from('custom_roles')
+      .select('id, name, description, permissions, created_at, created_by:profiles(name, email)', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) throw error;
 
     res.json({
       success: true,
@@ -75,8 +68,8 @@ const getRoles = async (req, res) => {
         pagination: {
           page,
           limit,
-          total,
-          pages: Math.ceil(total / limit)
+          total: count || 0,
+          pages: Math.ceil((count || 0) / limit)
         }
       }
     });
@@ -90,11 +83,15 @@ const getRoles = async (req, res) => {
   }
 };
 
-// Obtener rol por ID
 const getRoleById = async (req, res) => {
   try {
-    const role = await Role.findById(req.params.id).populate('createdBy', 'name email');
+    const { data: role, error } = await supabaseAdmin
+      .from('custom_roles')
+      .select('id, name, description, permissions, created_at, created_by:profiles(name, email)')
+      .eq('id', req.params.id)
+      .maybeSingle();
 
+    if (error) throw error;
     if (!role) {
       return res.status(404).json({
         success: false,
@@ -103,10 +100,7 @@ const getRoleById = async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      data: { role }
-    });
+    res.json({ success: true, data: { role } });
   } catch (error) {
     logger.error('Error al obtener rol:', error);
     res.status(500).json({
@@ -117,13 +111,17 @@ const getRoleById = async (req, res) => {
   }
 };
 
-// Actualizar rol
 const updateRole = async (req, res) => {
   try {
     const { name, description, permissions } = req.body;
 
-    // Validar que no haya otro rol con el mismo nombre
-    const existingRole = await Role.findOne({ name, _id: { $ne: req.params.id } });
+    const { data: existingRole } = await supabaseAdmin
+      .from('custom_roles')
+      .select('id')
+      .eq('name', name)
+      .neq('id', req.params.id)
+      .maybeSingle();
+
     if (existingRole) {
       return res.status(409).json({
         success: false,
@@ -132,17 +130,14 @@ const updateRole = async (req, res) => {
       });
     }
 
-    const role = await Role.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        description,
-        permissions: permissions || [],
-        updatedAt: new Date()
-      },
-      { new: true, runValidators: true }
-    );
+    const { data: role, error } = await supabaseAdmin
+      .from('custom_roles')
+      .update({ name, description, permissions: permissions || [] })
+      .eq('id', req.params.id)
+      .select('id, name, description, permissions, updated_at')
+      .maybeSingle();
 
+    if (error) throw error;
     if (!role) {
       return res.status(404).json({
         success: false,
@@ -168,11 +163,16 @@ const updateRole = async (req, res) => {
   }
 };
 
-// Eliminar rol
 const deleteRole = async (req, res) => {
   try {
-    const role = await Role.findByIdAndDelete(req.params.id);
+    const { data: role, error } = await supabaseAdmin
+      .from('custom_roles')
+      .delete()
+      .eq('id', req.params.id)
+      .select('id, name')
+      .maybeSingle();
 
+    if (error) throw error;
     if (!role) {
       return res.status(404).json({
         success: false,
@@ -183,10 +183,7 @@ const deleteRole = async (req, res) => {
 
     logger.info(`Rol eliminado: ${role.name}`);
 
-    res.json({
-      success: true,
-      message: 'Rol eliminado exitosamente'
-    });
+    res.json({ success: true, message: 'Rol eliminado exitosamente' });
   } catch (error) {
     logger.error('Error al eliminar rol:', error);
     res.status(500).json({

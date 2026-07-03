@@ -1,47 +1,38 @@
-const mongoose = require('mongoose');
 require('dotenv').config();
+const { supabaseAdmin } = require('../src/config/supabaseClient');
 
-const uri = process.env.MONGODB_URI;
-
-if (!uri) {
-  console.error('ERROR: No se encontró MONGODB_URI en .env');
-  process.exit(1);
-}
+const TABLES = [
+  'profiles', 'registration_requests', 'custom_roles', 'configurations',
+  'audits', 'findings', 'risks', 'actions', 'documents', 'trainings',
+  'certificates', 'calendar_events', 'audit_logs'
+];
 
 const run = async () => {
-  try {
-    console.log('Conectando a MongoDB...');
-    await mongoose.connect(uri);
+  console.log(`Conectando a Supabase: ${process.env.SUPABASE_URL}`);
 
-    const db = mongoose.connection.db;
-    const dbName = db.databaseName;
-    console.log(`Conectado a la base de datos: ${dbName}`);
-
-    const collections = await db.listCollections().toArray();
-    console.log(`Colecciones encontradas: ${collections.length}`);
-    collections.forEach((col) => {
-      console.log(`- ${col.name}`);
-    });
-
-    if (collections.some((col) => col.name === 'users')) {
-      const usersCount = await db.collection('users').countDocuments();
-      const sampleUser = await db.collection('users').findOne({}, { projection: { password: 0 } });
-      console.log(`\nColección 'users' existe. Documentos: ${usersCount}`);
-      console.log('Ejemplo de documento (sin password):');
-      console.log(sampleUser || 'No hay documentos en users');
+  for (const table of TABLES) {
+    const { count, error } = await supabaseAdmin.from(table).select('id', { count: 'exact', head: true });
+    if (error) {
+      console.error(`- ${table}: ERROR (${error.message})`);
     } else {
-      console.log('\nNo se encontró la colección users. Aún no se ha guardado nada allí.');
+      console.log(`- ${table}: ${count} filas`);
     }
+  }
 
-    await mongoose.disconnect();
-    console.log('\nDesconectado correctamente.');
-  } catch (error) {
-    console.error('Error en la conexión a MongoDB:', error.message);
-    if (error.name === 'MongoNetworkError') {
-      console.error('Revisa tu MONGODB_URI, tu IP en el whitelist de Atlas y la conexión de red.');
-    }
-    process.exit(1);
+  const { data: profiles, error: profilesError } = await supabaseAdmin
+    .from('profiles')
+    .select('email, role, active')
+    .order('created_at', { ascending: true });
+
+  if (!profilesError) {
+    console.log('\nUsuarios registrados:');
+    profiles.forEach(p => console.log(`- ${p.email} (${p.role}, ${p.active ? 'activo' : 'inactivo'})`));
   }
 };
 
-run();
+run()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error('Error al verificar la base de datos:', error.message);
+    process.exit(1);
+  });

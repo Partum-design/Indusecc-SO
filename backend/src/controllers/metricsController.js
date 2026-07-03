@@ -1,8 +1,4 @@
-const Action = require('../models/Action');
-const Document = require('../models/Document');
-const Audit = require('../models/Audit');
-const Finding = require('../models/Finding');
-const User = require('../models/User');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
 
 // Obtener indicadores generales del colaborador
@@ -13,49 +9,57 @@ const getCollaboratorIndicators = async (req, res) => {
     const currentMonth = currentDate.getMonth();
     const currentYear = currentDate.getFullYear();
 
-    // Aciones/Tareas asignadas al colaborador
-    const actions = await Action.find({ assignedTo: userId });
-    const completedActions = actions.filter(a => a.status === 'Cerrada').length;
+    const [
+      { data: actions, error: actionsError },
+      { data: documents, error: documentsError },
+      { data: audits, error: auditsError },
+      { data: findings, error: findingsError }
+    ] = await Promise.all([
+      supabaseAdmin.from('actions').select('status, updated_at').eq('assigned_to', userId),
+      supabaseAdmin.from('documents').select('expiry_date'),
+      supabaseAdmin.from('audits').select('status'),
+      supabaseAdmin.from('findings').select('status')
+    ]);
+
+    if (actionsError) throw actionsError;
+    if (documentsError) throw documentsError;
+    if (auditsError) throw auditsError;
+    if (findingsError) throw findingsError;
+
+    const completedActions = actions.filter(a => a.status === 'cerrada').length;
     const totalActions = actions.length;
     const pendingActions = totalActions - completedActions;
 
-    // Documentos vigentes
-    const documents = await Document.find();
     const activeDocuments = documents.filter(d => {
-      if (!d.expiryDate) return true;
-      return new Date(d.expiryDate) > currentDate;
+      if (!d.expiry_date) return true;
+      return new Date(d.expiry_date) > currentDate;
     }).length;
     const totalDocuments = documents.length;
 
-    // Tareas completadas este mes
     const monthStart = new Date(currentYear, currentMonth, 1);
-    const monthEnd = new Date(currentYear, currentMonth + 1, 0);
-    const monthlyCompletedActions = actions.filter(a => 
-      a.status === 'Cerrada' && 
-      new Date(a.updatedAt) >= monthStart && 
-      new Date(a.updatedAt) <= monthEnd
+    const monthEnd = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59, 999);
+    const monthlyCompletedActions = actions.filter(a =>
+      a.status === 'cerrada' &&
+      new Date(a.updated_at) >= monthStart &&
+      new Date(a.updated_at) <= monthEnd
     ).length;
 
-    // Auditorías completadas
-    const audits = await Audit.find();
-    const completedAudits = audits.filter(a => a.status === 'Cerrada').length;
+    // "completada" es el estado real de cierre en el enum audit_status
+    // (el código Mongoose original comparaba contra 'Cerrada', que nunca
+    // existió en el enum de Audit y por eso completedAudits siempre daba 0).
+    const completedAudits = audits.filter(a => a.status === 'completada').length;
+    const resolvedFindings = findings.filter(f => f.status === 'cerrado').length;
 
-    // Hallazgos resueltos
-    const findings = await Finding.find();
-    const resolvedFindings = findings.filter(f => f.status === 'Cerrado').length;
-
-    // Cumplimiento SGC general
     const totalItems = totalActions + totalDocuments + audits.length + findings.length;
     const completedItems = completedActions + activeDocuments + completedAudits + resolvedFindings;
     const sgcCompliance = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
 
-    // Trend
     const lastMonthStart = new Date(currentYear, currentMonth - 1, 1);
-    const lastMonthEnd = new Date(currentYear, currentMonth, 0);
-    const lastMonthCompletedActions = actions.filter(a => 
-      a.status === 'Cerrada' && 
-      new Date(a.updatedAt) >= lastMonthStart && 
-      new Date(a.updatedAt) <= lastMonthEnd
+    const lastMonthEnd = new Date(currentYear, currentMonth, 0, 23, 59, 59, 999);
+    const lastMonthCompletedActions = actions.filter(a =>
+      a.status === 'cerrada' &&
+      new Date(a.updated_at) >= lastMonthStart &&
+      new Date(a.updated_at) <= lastMonthEnd
     ).length;
     const trend = monthlyCompletedActions - lastMonthCompletedActions;
 
@@ -110,15 +114,12 @@ const getCollaboratorIndicators = async (req, res) => {
   }
 };
 
-// Obtener indicadores por cláusula ISO
 // Obtener cumplimiento por cláusula ISO
 const getComplianceByClause = async (req, res) => {
   try {
-    // Obtener todos los hallazgos y auditorías para calcular cumplimiento por cláusula
-    const findings = await Finding.find();
-    const audits = await Audit.find();
+    const { data: findings, error } = await supabaseAdmin.from('findings').select('clause, status');
+    if (error) throw error;
 
-    // Definir cláusulas ISO 9001 principales
     const clauses = [
       { id: '4', label: 'Cl. 4 — Contexto', total: 0, resolved: 0 },
       { id: '5', label: 'Cl. 5 — Liderazgo', total: 0, resolved: 0 },
@@ -129,27 +130,23 @@ const getComplianceByClause = async (req, res) => {
       { id: '10', label: 'Cl. 10 — Mejora', total: 0, resolved: 0 }
     ];
 
-    // Calcular hallazgos por cláusula
     findings.forEach(finding => {
       const clauseIndex = clauses.findIndex(c => c.id === finding.clause);
       if (clauseIndex !== -1) {
         clauses[clauseIndex].total++;
-        if (finding.status === 'Cerrado') {
+        if (finding.status === 'cerrado') {
           clauses[clauseIndex].resolved++;
         }
       }
     });
 
-    // Calcular cumplimiento por cláusula
     const complianceData = clauses.map(clause => {
-      // Si no hay hallazgos en la cláusula, asumir 100% cumplimiento
-      // Si hay hallazgos, calcular porcentaje de resolución
       const compliance = clause.total === 0 ? 100 : Math.round((clause.resolved / clause.total) * 100);
 
       return {
         clause: clause.id,
         label: clause.label,
-        compliance: compliance,
+        compliance,
         totalFindings: clause.total,
         resolvedFindings: clause.resolved,
         color: compliance >= 90 ? '#16A34A' : compliance >= 80 ? '#F59E0B' : '#DC2626'
@@ -158,9 +155,7 @@ const getComplianceByClause = async (req, res) => {
 
     res.json({
       success: true,
-      data: {
-        compliance: complianceData
-      }
+      data: { compliance: complianceData }
     });
   } catch (error) {
     logger.error('Error al obtener cumplimiento por cláusula:', error);
@@ -178,31 +173,28 @@ const getProcessIndicators = async (req, res) => {
     const currentDate = new Date();
     const currentMonth = currentDate.getMonth();
     const currentYear = currentDate.getFullYear();
-    const monthStart = new Date(currentYear, currentMonth, 1);
-    const monthEnd = new Date(currentYear, currentMonth + 1, 0);
+    const monthStart = new Date(currentYear, currentMonth, 1).toISOString();
+    const monthEnd = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59, 999).toISOString();
 
-    // Calcular indicadores basados en datos reales
-    const actions = await Action.find({
-      createdAt: { $gte: monthStart, $lte: monthEnd }
-    });
-    const completedActions = actions.filter(a => a.status === 'Cerrada').length;
+    const [
+      { data: actions, error: actionsError },
+      { data: findings, error: findingsError }
+    ] = await Promise.all([
+      supabaseAdmin.from('actions').select('status').gte('created_at', monthStart).lte('created_at', monthEnd),
+      supabaseAdmin.from('findings').select('status').gte('created_at', monthStart).lte('created_at', monthEnd)
+    ]);
+
+    if (actionsError) throw actionsError;
+    if (findingsError) throw findingsError;
+
+    const completedActions = actions.filter(a => a.status === 'cerrada').length;
     const totalActions = actions.length;
 
-    const findings = await Finding.find({
-      createdAt: { $gte: monthStart, $lte: monthEnd }
-    });
-    const resolvedFindings = findings.filter(f => f.status === 'Cerrado').length;
+    const resolvedFindings = findings.filter(f => f.status === 'cerrado').length;
 
-    // Eficiencia de producción (basada en acciones completadas)
     const efficiency = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 85;
-
-    // Tasa de rechazos (basada en hallazgos no resueltos)
     const rejectionRate = findings.length > 0 ? Math.round(((findings.length - resolvedFindings) / findings.length) * 100) : 2;
-
-    // Cumplimiento de plan (basado en acciones completadas vs total)
     const planCompliance = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 90;
-
-    // Tiempo de ciclo (simulado basado en eficiencia)
     const cycleTime = efficiency > 90 ? 4.2 : efficiency > 80 ? 4.8 : 5.2;
 
     const indicators = [
@@ -240,10 +232,7 @@ const getProcessIndicators = async (req, res) => {
       }
     ];
 
-    res.json({
-      success: true,
-      data: { indicators }
-    });
+    res.json({ success: true, data: { indicators } });
   } catch (error) {
     logger.error('Error al obtener indicadores de proceso:', error);
     res.status(500).json({
@@ -262,25 +251,36 @@ const getUserPerformance = async (req, res) => {
     const currentMonth = currentDate.getMonth();
     const currentYear = currentDate.getFullYear();
     const monthStart = new Date(currentYear, currentMonth, 1);
-    const monthEnd = new Date(currentYear, currentMonth + 1, 0);
+    const monthEnd = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59, 999);
 
-    // Acciones asignadas
-    const userActions = await Action.find({ assignedTo: userId });
-    const monthlyActions = userActions.filter(a => 
-      new Date(a.createdAt) >= monthStart && 
-      new Date(a.createdAt) <= monthEnd
+    const [
+      { data: userActions, error: actionsError },
+      { data: userDocuments, error: documentsError },
+      { data: userTrainings, error: trainingsError }
+    ] = await Promise.all([
+      supabaseAdmin.from('actions').select('status, created_at').eq('assigned_to', userId),
+      supabaseAdmin.from('documents').select('id').eq('uploaded_by', userId),
+      supabaseAdmin.from('trainings').select('status').eq('assigned_to', userId)
+    ]);
+
+    if (actionsError) throw actionsError;
+    if (documentsError) throw documentsError;
+    if (trainingsError) throw trainingsError;
+
+    const monthlyActions = userActions.filter(a =>
+      new Date(a.created_at) >= monthStart &&
+      new Date(a.created_at) <= monthEnd
     );
-    const completedMonthly = monthlyActions.filter(a => a.status === 'Cerrada').length;
+    const completedMonthly = monthlyActions.filter(a => a.status === 'cerrada').length;
 
-    // Documentos revisados (aproximado: si fueron actualizados por el usuario)
-    const docsReviewed = Math.floor(Math.random() * 3) + 7; // 7-10 simulado
-    const docsTarget = 10;
+    // Datos reales (antes eran valores simulados/aleatorios): documentos
+    // subidos por el usuario y capacitaciones asignadas/completadas.
+    const docsReviewed = userDocuments.length;
+    const docsTarget = Math.max(docsReviewed, 10);
 
-    // Capacitaciones (simulado)
-    const capacitationsCompleted = 3;
-    const capacitationsTarget = 5;
+    const capacitationsCompleted = userTrainings.filter(t => t.status === 'completado').length;
+    const capacitationsTarget = Math.max(userTrainings.length, capacitationsCompleted, 1);
 
-    // Tareas a tiempo
     const onTimeTasks = completedMonthly;
     const totalMonthlyTasks = monthlyActions.length;
 
@@ -288,13 +288,13 @@ const getUserPerformance = async (req, res) => {
       {
         label: 'Procedimientos revisados',
         value: `${docsReviewed}/${docsTarget}`,
-        percentage: Math.round((docsReviewed / docsTarget) * 100),
+        percentage: docsTarget > 0 ? Math.round((docsReviewed / docsTarget) * 100) : 0,
         color: '#16A34A'
       },
       {
         label: 'Capacitaciones',
         value: `${capacitationsCompleted}/${capacitationsTarget}`,
-        percentage: Math.round((capacitationsCompleted / capacitationsTarget) * 100),
+        percentage: capacitationsTarget > 0 ? Math.round((capacitationsCompleted / capacitationsTarget) * 100) : 0,
         color: '#3B82F6'
       },
       {
@@ -305,10 +305,7 @@ const getUserPerformance = async (req, res) => {
       }
     ];
 
-    res.json({
-      success: true,
-      data: { performance }
-    });
+    res.json({ success: true, data: { performance } });
   } catch (error) {
     logger.error('Error al obtener desempeño del usuario:', error);
     res.status(500).json({

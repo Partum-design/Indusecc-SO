@@ -4,8 +4,7 @@ import {
   getUserTrainings,
   getUserCertificates,
   updateTrainingProgress,
-  downloadCertificate,
-  createSampleTrainings
+  downloadCertificate
 } from '../../api/api'
 
 export default function Capacitacion() {
@@ -42,26 +41,8 @@ export default function Capacitacion() {
 
       } catch (err) {
         console.error('Error loading training data:', err)
-
-        // Si no hay datos, intentar crear datos de ejemplo
-        try {
-          await createSampleTrainings()
-          // Recargar después de crear datos de ejemplo
-          const trainingsResponse = await getUserTrainings()
-          if (trainingsResponse.data?.success) {
-            setTrainings(trainingsResponse.data.data.trainings)
-            setStats(trainingsResponse.data.data.stats)
-          }
-
-          const certificatesResponse = await getUserCertificates()
-          if (certificatesResponse.data?.success) {
-            setCertificates(certificatesResponse.data.data.certificates)
-          }
-        } catch (sampleErr) {
-          console.error('Error creating sample data:', sampleErr)
-          setError('Error al cargar capacitaciones. Verifica tu conexión.')
-          toast('Error al cargar capacitaciones', 'err')
-        }
+        setError('Error al cargar capacitaciones. Verifica tu conexión.')
+        toast('Error al cargar capacitaciones', 'err')
       } finally {
         setLoading(false)
       }

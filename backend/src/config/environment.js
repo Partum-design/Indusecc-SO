@@ -4,14 +4,17 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/indusecc-os';
-const JWT_SECRET = process.env.JWT_SECRET || 'tu_secreto_muy_largo_y_aleatorio_aqui';
-const JWT_EXPIRE = process.env.JWT_EXPIRE || '1h';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'otro_secreto_largo_aleatorio';
-const JWT_REFRESH_EXPIRE = process.env.JWT_REFRESH_EXPIRE || '7d';
+
+// Supabase
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
 const CORS_ORIGIN = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean)
   : ['http://localhost:5173', 'http://localhost:5174'];
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
 const EMAIL_SERVICE = process.env.EMAIL_SERVICE || 'gmail';
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD;
@@ -22,12 +25,11 @@ const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 module.exports = {
   PORT,
   NODE_ENV,
-  MONGO_URI,
-  JWT_SECRET,
-  JWT_EXPIRE,
-  JWT_REFRESH_SECRET,
-  JWT_REFRESH_EXPIRE,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  SUPABASE_SERVICE_ROLE_KEY,
   CORS_ORIGIN,
+  FRONTEND_URL,
   EMAIL_SERVICE,
   EMAIL_USER,
   EMAIL_PASSWORD,

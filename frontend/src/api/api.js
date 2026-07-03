@@ -103,4 +103,3 @@ export const getUserTrainings = () => api.get('trainings');
 export const getUserCertificates = () => api.get('trainings/certificates');
 export const updateTrainingProgress = (id, data) => api.put(`trainings/${id}/progress`, data);
 export const downloadCertificate = (id) => api.get(`trainings/certificates/${id}/download`);
-export const createSampleTrainings = () => api.post('trainings/sample');

@@ -1,14 +1,37 @@
-const jwt = require('jsonwebtoken')
-const { JWT_SECRET } = require('../config/environment')
+const { supabaseAdmin } = require('../config/supabaseClient')
 
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const authHeader = req.header('Authorization')
   if (!authHeader) return res.status(401).json({ message: 'Acceso denegado' })
 
   const token = authHeader.replace('Bearer ', '')
+
   try {
-    const decoded = jwt.verify(token, JWT_SECRET)
-    req.user = decoded
+    const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(token)
+    if (authError || !authData?.user) {
+      return res.status(401).json({ message: 'Token inválido' })
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, email, role, active')
+      .eq('id', authData.user.id)
+      .single()
+
+    if (profileError || !profile) {
+      return res.status(401).json({ message: 'Perfil no encontrado' })
+    }
+
+    if (!profile.active) {
+      return res.status(403).json({ message: 'Usuario desactivado' })
+    }
+
+    req.user = {
+      id: profile.id,
+      name: profile.name,
+      email: profile.email,
+      role: profile.role.toUpperCase(),
+    }
     next()
   } catch (error) {
     res.status(401).json({ message: 'Token inválido' })

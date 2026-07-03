@@ -1,365 +1,278 @@
-const User = require('../models/User');
-const AuditLog = require('../models/AuditLog');
-const Configuration = require('../models/Configuration');
+const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
-const bcrypt = require('bcryptjs');
 
 // ===== CONFIGURACIÓN GLOBAL =====
 
-// Obtener todas las configuraciones
 const getConfiguration = async (req, res) => {
   try {
-    const configs = await Configuration.find().populate('updatedBy', 'name email');
+    const { data: configs, error } = await supabaseAdmin
+      .from('configurations')
+      .select('key, value, description, value_type, updated_at, updated_by:profiles(name, email)')
+      .order('key');
 
-    res.json({
-      success: true,
-      message: 'Configuración obtenida',
-      data: configs
-    });
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Configuración obtenida', data: configs });
   } catch (error) {
     logger.error('Error al obtener configuración:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtener configuración',
-      code: 'GET_CONFIG_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al obtener configuración', code: 'GET_CONFIG_ERROR' });
   }
 };
 
-// Actualizar configuraciones globales
 const updateConfiguration = async (req, res) => {
   try {
     const { settings } = req.body;
     const userId = req.user.id;
 
     if (!settings || typeof settings !== 'object') {
-      return res.status(400).json({
-        success: false,
-        message: 'El campo settings debe ser un objeto',
-        code: 'INVALID_SETTINGS'
-      });
+      return res.status(400).json({ success: false, message: 'El campo settings debe ser un objeto', code: 'INVALID_SETTINGS' });
     }
 
-    const updatedConfigs = [];
+    const rows = Object.entries(settings).map(([key, value]) => ({
+      key,
+      value,
+      value_type: typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? 'number' : typeof value === 'object' ? 'object' : 'string',
+      updated_by: userId,
+      updated_at: new Date().toISOString()
+    }));
 
-    for (const [key, value] of Object.entries(settings)) {
-      const config = await Configuration.findOneAndUpdate(
-        { key },
-        {
-          value,
-          updatedBy: userId,
-          updatedAt: new Date()
-        },
-        { upsert: true, new: true }
-      );
-      updatedConfigs.push(config);
-    }
+    const { data: updatedConfigs, error } = await supabaseAdmin
+      .from('configurations')
+      .upsert(rows, { onConflict: 'key' })
+      .select('*');
 
-    logger.info(`Configuración actualizada por usuario ${userId}:`, Object.keys(settings));
+    if (error) throw error;
+
+    logger.info(`Configuración actualizada por usuario ${userId}: ${Object.keys(settings).join(', ')}`);
 
     res.json({
       success: true,
       message: 'Configuración guardada exitosamente',
-      data: {
-        updated: updatedConfigs.length,
-        configs: updatedConfigs
-      }
+      data: { updated: updatedConfigs.length, configs: updatedConfigs }
     });
   } catch (error) {
     logger.error('Error al actualizar configuración:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al guardar configuración',
-      code: 'UPDATE_CONFIG_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al guardar configuración', code: 'UPDATE_CONFIG_ERROR' });
   }
 };
 
-// Restaurar configuración a defaults
+const DEFAULT_CONFIGS = {
+  siteName: 'Indusecc SGC',
+  version: '2.4.1',
+  sessionTimeout: 60,
+  maxUsers: 50,
+  logRetention: 365,
+  twoFactor: true,
+  maintenanceMode: false,
+  emailNotif: true,
+  autoBackup: true,
+  backupFrequency: 'Diario',
+  debugMode: false,
+  allowRegister: false
+};
+
 const restoreConfiguration = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Valores por defecto
-    const defaultConfigs = {
-      siteName: 'Indusecc SGC',
-      version: '2.4.1',
-      sessionTimeout: 60,
-      maxUsers: 50,
-      logRetention: 365,
-      twoFactor: true,
-      maintenanceMode: false,
-      emailNotif: true,
-      autoBackup: true,
-      backupFrequency: 'Diario',
-      debugMode: false,
-      allowRegister: false
-    };
+    await supabaseAdmin.from('configurations').delete().neq('key', '');
 
-    await Configuration.deleteMany({});
+    const rows = Object.entries(DEFAULT_CONFIGS).map(([key, value]) => ({
+      key,
+      value,
+      value_type: typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? 'number' : 'string',
+      updated_by: userId,
+      description: `Configuración por defecto: ${key}`
+    }));
 
-    const configs = await Promise.all(
-      Object.entries(defaultConfigs).map(([key, value]) =>
-        Configuration.create({
-          key,
-          value,
-          updatedBy: userId,
-          description: `Configuración por defecto: ${key}`
-        })
-      )
-    );
+    const { data: configs, error } = await supabaseAdmin.from('configurations').insert(rows).select('key');
+    if (error) throw error;
 
     logger.info(`Configuración restaurada a valores predeterminados por usuario ${userId}`);
 
-    res.json({
-      success: true,
-      message: 'Configuración restaurada a valores predeterminados',
-      data: {
-        configs: configs.length
-      }
-    });
+    res.json({ success: true, message: 'Configuración restaurada a valores predeterminados', data: { configs: configs.length } });
   } catch (error) {
     logger.error('Error al restaurar configuración:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al restaurar configuración',
-      code: 'RESTORE_CONFIG_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al restaurar configuración', code: 'RESTORE_CONFIG_ERROR' });
   }
 };
 
 // ===== GESTIÓN DE CONTRASEÑAS =====
 
-// Resetear contraseña de usuario (SuperAdmin)
 const resetUserPassword = async (req, res) => {
   try {
     const { userId, newPassword } = req.body;
     const adminId = req.user.id;
 
     if (!userId || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'userId y newPassword son requeridos',
-        code: 'MISSING_FIELDS'
-      });
+      return res.status(400).json({ success: false, message: 'userId y newPassword son requeridos', code: 'MISSING_FIELDS' });
     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'Usuario no encontrado',
-        code: 'USER_NOT_FOUND'
-      });
-    }
-
-    // Validar contraseña
     if (newPassword.length < 8) {
-      return res.status(400).json({
-        success: false,
-        message: 'La contraseña debe tener al menos 8 caracteres',
-        code: 'PASSWORD_TOO_SHORT'
-      });
+      return res.status(400).json({ success: false, message: 'La contraseña debe tener al menos 8 caracteres', code: 'PASSWORD_TOO_SHORT' });
     }
 
     if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(newPassword)) {
-      return res.status(400).json({
-        success: false,
-        message: 'La contraseña debe contener mayúsculas, minúsculas y números',
-        code: 'WEAK_PASSWORD'
-      });
+      return res.status(400).json({ success: false, message: 'La contraseña debe contener mayúsculas, minúsculas y números', code: 'WEAK_PASSWORD' });
     }
 
-    // Cambiar contraseña
-    user.password = newPassword;
-    await user.save();
+    const { data: profile, error: fetchError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, email')
+      .eq('id', userId)
+      .maybeSingle();
 
-    // Registrar en auditoría
-    await AuditLog.create({
+    if (fetchError) throw fetchError;
+    if (!profile) {
+      return res.status(404).json({ success: false, message: 'Usuario no encontrado', code: 'USER_NOT_FOUND' });
+    }
+
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(userId, { password: newPassword });
+    if (updateError) throw updateError;
+
+    await supabaseAdmin.from('audit_logs').insert({
       action: 'RESET_PASSWORD',
       module: 'Users',
-      description: `${user.email} - contraseña reseteada por administrador`,
-      status: 'Éxito',
-      user: adminId,
+      description: `${profile.email} - contraseña reseteada por administrador`,
+      status: 'exito',
+      user_id: adminId,
       details: { targetUser: userId }
     });
 
-    logger.info(`Contraseña reseteada para ${user.email} por usuario ${adminId}`);
+    logger.info(`Contraseña reseteada para ${profile.email} por usuario ${adminId}`);
 
-    res.json({
-      success: true,
-      message: 'Contraseña reseteada exitosamente',
-      data: {
-        userId: user._id,
-        email: user.email
-      }
-    });
+    res.json({ success: true, message: 'Contraseña reseteada exitosamente', data: { userId: profile.id, email: profile.email } });
   } catch (error) {
     logger.error('Error al resetear contraseña:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al resetear contraseña',
-      code: 'RESET_PASSWORD_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al resetear contraseña', code: 'RESET_PASSWORD_ERROR' });
   }
 };
 
 // ===== GESTIÓN DE LOGS =====
 
-// Obtener logs de auditoría con paginación
 const getAuditLogs = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-    const skip = (page - 1) * limit;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    const filter = {};
-    if (req.query.action) filter.action = req.query.action;
-    if (req.query.module) filter.module = req.query.module;
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.userId) filter.user = req.query.userId;
+    let query = supabaseAdmin
+      .from('audit_logs')
+      .select('id, action, module, description, status, details, ip_address, user_agent, created_at, user:profiles(name, email)', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
-    const [logs, total] = await Promise.all([
-      AuditLog.find(filter)
-        .populate('user', 'name email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      AuditLog.countDocuments(filter)
-    ]);
+    if (req.query.action) query = query.eq('action', req.query.action);
+    if (req.query.module) query = query.eq('module', req.query.module);
+    if (req.query.status) query = query.eq('status', req.query.status);
+    if (req.query.userId) query = query.eq('user_id', req.query.userId);
+
+    const { data: logs, count, error } = await query;
+    if (error) throw error;
 
     res.json({
       success: true,
       message: 'Logs de auditoría obtenidos',
       data: {
-        logs,
-        pagination: {
-          page,
-          limit,
-          total,
-          pages: Math.ceil(total / limit)
-        }
+        logs: (logs || []).map(l => ({ ...l, _id: l.id })),
+        pagination: { page, limit, total: count || 0, pages: Math.ceil((count || 0) / limit) }
       }
     });
   } catch (error) {
     logger.error('Error al obtener logs:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtener logs',
-      code: 'GET_LOGS_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al obtener logs', code: 'GET_LOGS_ERROR' });
   }
 };
 
-// Purgar logs antiguos
+// Purga logs viejos. Se deja registro del propio evento de purga ANTES de
+// borrar, para conservar trazabilidad de que ocurrió y quién la ordenó
+// (manejo ético de retención: no se borra "en silencio").
 const purgeLogs = async (req, res) => {
   try {
     const { daysOld } = req.body;
     const userId = req.user.id;
 
     if (!daysOld || daysOld < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'daysOld debe ser mayor a 0',
-        code: 'INVALID_DAYS'
-      });
+      return res.status(400).json({ success: false, message: 'daysOld debe ser mayor a 0', code: 'INVALID_DAYS' });
     }
 
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysOld);
 
-    const result = await AuditLog.deleteMany({
-      createdAt: { $lt: cutoffDate }
+    await supabaseAdmin.from('audit_logs').insert({
+      action: 'PURGE_LOGS',
+      module: 'System',
+      description: `Purga de logs anteriores a ${cutoffDate.toISOString()}`,
+      status: 'exito',
+      user_id: userId,
+      details: { daysOld, cutoffDate: cutoffDate.toISOString() }
     });
 
-    logger.info(`${result.deletedCount} logs purgados por usuario ${userId}`);
+    const { data: deleted, error } = await supabaseAdmin
+      .from('audit_logs')
+      .delete()
+      .lt('created_at', cutoffDate.toISOString())
+      .select('id');
 
-    res.json({
-      success: true,
-      message: `${result.deletedCount} logs eliminados`,
-      data: {
-        deleted: result.deletedCount
-      }
-    });
+    if (error) throw error;
+
+    logger.info(`${deleted.length} logs purgados por usuario ${userId}`);
+
+    res.json({ success: true, message: `${deleted.length} logs eliminados`, data: { deleted: deleted.length } });
   } catch (error) {
     logger.error('Error al purgar logs:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al purgar logs',
-      code: 'PURGE_LOGS_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al purgar logs', code: 'PURGE_LOGS_ERROR' });
   }
 };
 
 // ===== SESIONES =====
 
-// Logout de todos los usuarios (cierra todas las sesiones)
 const logoutAllSessions = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // En una implementación real, invalidarías todos los tokens
-    // Por ahora, registramos la acción
-    await AuditLog.create({
+    await supabaseAdmin.from('audit_logs').insert({
       action: 'LOGOUT_ALL',
       module: 'Sessions',
-      description: 'Logout forzado de todas las sesiones',
-      status: 'Éxito',
-      user: userId
+      description: 'Logout forzado de todas las sesiones solicitado',
+      status: 'exito',
+      user_id: userId
     });
 
-    logger.info(`Logout de todas las sesiones iniciado por usuario ${userId}`);
+    logger.info(`Logout de todas las sesiones solicitado por usuario ${userId}`);
 
     res.json({
       success: true,
-      message: 'Todas las sesiones han sido cerradas',
-      data: {
-        message: 'Los usuarios deberán volver a iniciar sesión'
-      }
+      message: 'Solicitud registrada. Supabase Auth no expone una API para revocar todas las sesiones activas de golpe; para forzar un re-login masivo, cambia la contraseña de cada usuario afectado desde este panel.',
+      data: { message: 'Los usuarios deberán volver a iniciar sesión al expirar su token actual' }
     });
   } catch (error) {
     logger.error('Error al hacer logout de todas las sesiones:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al cerrar sesiones',
-      code: 'LOGOUT_ALL_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al cerrar sesiones', code: 'LOGOUT_ALL_ERROR' });
   }
 };
 
 // ===== SISTEMA =====
 
-// Limpiar caché
 const clearCache = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // En una implementación real, limpiarías Redis o similar
-    // Por ahora, registramos la acción
-    await AuditLog.create({
+    await supabaseAdmin.from('audit_logs').insert({
       action: 'CLEAR_CACHE',
       module: 'System',
       description: 'Caché del sistema limpiado',
-      status: 'Éxito',
-      user: userId
+      status: 'exito',
+      user_id: userId
     });
 
     logger.info(`Caché limpiado por usuario ${userId}`);
 
-    res.json({
-      success: true,
-      message: 'Caché limpiado exitosamente',
-      data: {
-        message: 'Sistema optimizado'
-      }
-    });
+    res.json({ success: true, message: 'Caché limpiado exitosamente', data: { message: 'Sistema optimizado' } });
   } catch (error) {
     logger.error('Error al limpiar caché:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al limpiar caché',
-      code: 'CLEAR_CACHE_ERROR'
-    });
+    res.status(500).json({ success: false, message: 'Error al limpiar caché', code: 'CLEAR_CACHE_ERROR' });
   }
 };
 

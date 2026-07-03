@@ -1,8 +1,9 @@
-const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const validateObjectId = (req, res, next) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+  if (!UUID_REGEX.test(req.params.id)) {
     return res.status(400).json({
       success: false,
       message: 'ID inválido',
