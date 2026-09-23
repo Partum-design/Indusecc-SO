@@ -1,7 +1,7 @@
 import { useState, useContext } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { ToastContainer } from './Toast'
-import NotificationsPanel from './NotificationsPanel'
+import NotificationsBell from './NotificationsBell'
 import { getInitials, formatRole } from '../utils/userHelpers'
 import { AuthContext } from '../context/AuthContext'
 
@@ -13,8 +13,10 @@ const navItems = [
   { to: '/superadmin/usuarios', label: 'Todos los Usuarios', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg> },
   { to: '/superadmin/contrasenas', label: 'Generar / Resetear', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg> },
   { section: 'Auditoría y Logs' },
-  { to: '/superadmin/auditoria-logs', label: 'Logs del Sistema', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>, badge: '12' },
+  { to: '/superadmin/notificaciones', label: 'Notificaciones', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg> },
+  { to: '/superadmin/auditoria-logs', label: 'Logs del Sistema', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg> },
   { section: 'Norma ISO' },
+  { to: '/superadmin/documentos', label: 'Documentos ISO', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg> },
   { to: '/superadmin/norma', label: 'Nodos de la Norma', icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg> },
 ]
 
@@ -22,7 +24,6 @@ export default function SuperAdminLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [showNotif, setShowNotif] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const { user, logout } = useContext(AuthContext)
@@ -132,24 +133,7 @@ export default function SuperAdminLayout() {
               )}
             </div>
 
-            <div style={{ position: 'relative' }}>
-              <button className="tbtn" onClick={() => setShowNotif(v => !v)}>
-                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-                <span className="dot" />
-              </button>
-              {showNotif && (
-                <NotificationsPanel
-                  title="Alertas del Sistema"
-                  badgeLabel="3 críticas"
-                  items={[
-                    { title: 'Intento de acceso no autorizado', time: 'Hoy, 07:42', type: 'err' },
-                    { title: 'Config. global modificada', time: 'Hoy, 09:15', type: 'warn' },
-                    { title: 'Nuevo usuario creado (Admin)', time: 'Ayer, 18:30', type: 'ok' },
-                  ]}
-                  onViewAll={() => setShowNotif(false)}
-                />
-              )}
-            </div>
+            <NotificationsBell />
 
             {/* Perfil Dinámico */}
             <div style={{ position: 'relative' }}>

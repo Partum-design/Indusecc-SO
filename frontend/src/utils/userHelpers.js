@@ -14,3 +14,15 @@ export function formatRole(role) {
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
 }
+
+const ROLE_BASE = {
+  SUPER_ADMIN: '/superadmin',
+  ADMIN: '/admin',
+  COLABORADOR: '/colaborador',
+  CONSULTOR: '/consultor',
+}
+
+// Prefijo de rutas del rol ('/admin', '/colaborador'...) o '/login' si no hay sesión válida.
+export function roleBase(role) {
+  return ROLE_BASE[String(role || '').toUpperCase()] || '/login'
+}

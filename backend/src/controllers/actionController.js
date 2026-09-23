@@ -1,6 +1,6 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
-const sendEmail = require('../utils/email');
+const { notify } = require('../services/notificationService');
 
 const toApiAction = (row) => ({
   id: row.id,
@@ -20,52 +20,37 @@ const toApiAction = (row) => ({
 });
 
 const STATUS_TO_DB = { 'Iniciada': 'iniciada', 'En Proceso': 'en_proceso', 'Cerrada': 'cerrada' };
+const PRIORITIES = ['low', 'medium', 'high'];
+const ADMIN_ROLES = ['SUPER_ADMIN', 'ADMIN'];
+const isAdmin = (user) => ADMIN_ROLES.includes(user.role);
 
-const notifyAssignee = async (assignedToId, action, subjectPrefix, heading) => {
-  if (!assignedToId) return;
-  try {
-    const { data: user } = await supabaseAdmin
-      .from('profiles')
-      .select('name, email')
-      .eq('id', assignedToId)
-      .maybeSingle();
-
-    if (!user?.email) return;
-
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <h2 style="color: #1B6B3A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px;">${heading}</h2>
-        <p>Hola, <strong>${user.name}</strong>.</p>
-        <p>Se te asignó una Acción de Mejora en <strong>Indusecc SGC</strong>.</p>
-        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #1B6B3A;">
-          <p><strong>Tarea:</strong> ${action.title}</p>
-          <p><strong>Área:</strong> ${action.area || 'General'}</p>
-          <p><strong>Prioridad:</strong> ${action.priority || 'Normal'}</p>
-          <p><strong>Vencimiento:</strong> ${action.due_date ? new Date(action.due_date).toLocaleDateString() : 'No definida'}</p>
-        </div>
-        <p>Por favor, revisa la sección "Mis Tareas" en la plataforma para más detalles.</p>
-        <hr />
-        <p style="font-size: 0.7em; color: #999;">Indusecc SGC - Sistema de Gestión de Calidad</p>
-      </div>
-    `;
-
-    await sendEmail({
-      email: user.email,
-      subject: `${subjectPrefix}: ${action.title}`,
-      message: `Hola ${user.name}, tienes una tarea: ${action.title}.`,
-      html
-    });
-  } catch (err) {
-    logger.error('Error al enviar correo de notificación de tarea:', err);
-  }
+const notifyAssignee = async (assignedToId, action, heading, actor) => {
+  if (!assignedToId || assignedToId === actor?.id) return;
+  const due = action.due_date ? new Date(action.due_date).toLocaleDateString('es-MX') : 'sin fecha';
+  await notify({
+    userIds: [assignedToId],
+    type: 'tarea_asignada',
+    severity: action.priority === 'high' ? 'warning' : 'info',
+    title: `${heading}: ${action.title}`,
+    message: `Área: ${action.area || 'General'} · Prioridad: ${action.priority || 'medium'} · Vence: ${due}`,
+    linkKey: 'tasks',
+    entityType: 'action',
+    entityId: action.id,
+    createdBy: actor?.id || null,
+    dedupe: true,
+  });
 };
 
 const getActions = async (req, res) => {
   try {
-    const { data: actions, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('actions')
       .select('*, assigned_to_profile:profiles!actions_assigned_to_fkey(id, name)')
       .order('created_at', { ascending: false });
+
+    if (req.user.role === 'COLABORADOR') query = query.eq('assigned_to', req.user.id);
+
+    const { data: actions, error } = await query;
 
     if (error) throw error;
 
@@ -78,12 +63,26 @@ const getActions = async (req, res) => {
 
 const createAction = async (req, res) => {
   try {
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ success: false, message: 'Solo un administrador puede crear acciones', code: 'FORBIDDEN_ACTION' });
+    }
+
     const { title, description, area, assignedTo, dueDate, priority, status } = req.body;
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ success: false, message: 'El título es obligatorio', code: 'MISSING_TITLE' });
+    }
+    if (priority && !PRIORITIES.includes(priority)) {
+      return res.status(400).json({ success: false, message: 'Prioridad inválida', code: 'INVALID_PRIORITY' });
+    }
+    if (status && !STATUS_TO_DB[status]) {
+      return res.status(400).json({ success: false, message: 'Estado inválido', code: 'INVALID_STATUS' });
+    }
 
     const { data: action, error } = await supabaseAdmin
       .from('actions')
       .insert({
-        title,
+        title: String(title).trim(),
         description,
         area,
         assigned_to: assignedTo || null,
@@ -97,7 +96,7 @@ const createAction = async (req, res) => {
 
     if (error) throw error;
 
-    await notifyAssignee(action.assigned_to, action, '📋 Nueva Tarea', 'Nueva Tarea Asignada');
+    await notifyAssignee(action.assigned_to, action, 'Nueva tarea asignada', req.user);
 
     logger.info(`Acción de mejora continua creada: ${action.title}`);
     res.status(201).json({ success: true, data: toApiAction(action) });
@@ -110,6 +109,24 @@ const createAction = async (req, res) => {
 const updateAction = async (req, res) => {
   try {
     const { title, description, area, assignedTo, dueDate, priority, status } = req.body;
+
+    if (!isAdmin(req.user)) {
+      const { data: current, error: currentError } = await supabaseAdmin
+        .from('actions').select('assigned_to').eq('id', req.params.id).maybeSingle();
+      if (currentError) throw currentError;
+      if (!current) return res.status(404).json({ success: false, message: 'Acción no encontrada' });
+
+      const onlyStatus = [title, description, area, assignedTo, dueDate, priority].every(v => v === undefined);
+      if (current.assigned_to !== req.user.id || !onlyStatus || req.user.role === 'CONSULTOR') {
+        return res.status(403).json({ success: false, message: 'Solo puedes cambiar el estado de tus propias tareas', code: 'FORBIDDEN_ACTION' });
+      }
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return res.status(400).json({ success: false, message: 'Prioridad inválida', code: 'INVALID_PRIORITY' });
+    }
+    if (status !== undefined && !STATUS_TO_DB[status]) {
+      return res.status(400).json({ success: false, message: 'Estado inválido', code: 'INVALID_STATUS' });
+    }
 
     const updateData = {};
     if (title !== undefined) updateData.title = title;
@@ -133,7 +150,7 @@ const updateAction = async (req, res) => {
     }
 
     if (assignedTo) {
-      await notifyAssignee(action.assigned_to, action, '🔄 Tarea Actualizada', 'Tarea Actualizada / Asignada');
+      await notifyAssignee(action.assigned_to, action, 'Tarea actualizada', req.user);
     }
 
     res.json({ success: true, data: toApiAction(action) });
@@ -145,6 +162,9 @@ const updateAction = async (req, res) => {
 
 const deleteAction = async (req, res) => {
   try {
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ success: false, message: 'Solo un administrador puede eliminar acciones', code: 'FORBIDDEN_ACTION' });
+    }
     const { error } = await supabaseAdmin.from('actions').delete().eq('id', req.params.id);
     if (error) throw error;
     res.json({ success: true, message: 'Acción eliminada' });

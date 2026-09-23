@@ -1,6 +1,6 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
-const sendEmail = require('../utils/email');
+const { notify } = require('../services/notificationService');
 
 const STATUS_TO_DB = { 'Pendiente': 'pendiente', 'En Progreso': 'en_progreso', 'Completada': 'completada' };
 const STATUS_FROM_DB = { pendiente: 'Pendiente', en_progreso: 'En Progreso', completada: 'Completada' };
@@ -25,38 +25,21 @@ const toApiAudit = (row) => ({
 
 const SELECT_WITH_JOINS = '*, assigned_to_profile:profiles!audits_assigned_to_fkey(id, name, email), created_by_profile:profiles!audits_created_by_fkey(id, name, email)';
 
-const notifyAssignment = async (assignedToId, audit, subject, heading) => {
-  if (!assignedToId) return;
-  try {
-    const { data: user } = await supabaseAdmin.from('profiles').select('name, email').eq('id', assignedToId).maybeSingle();
-    if (!user?.email) return;
-
-    const auditDate = new Date(audit.date).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <h2 style="color: #8B0000; border-bottom: 2px solid #D4AF37; padding-bottom: 10px;">${heading}</h2>
-        <p>Hola, <strong>${user.name}</strong>.</p>
-        <p>Se te ha asignado una auditoría en la plataforma <strong>Indusecc SGC</strong>.</p>
-        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #D4AF37;">
-          <p><strong>Título:</strong> ${audit.title}</p>
-          <p><strong>Fecha Programada:</strong> ${auditDate}</p>
-          <p><strong>Descripción:</strong> ${audit.description || 'Sin descripción adicional'}</p>
-        </div>
-        <p>Por favor, revisa los detalles en tu panel de control.</p>
-        <hr />
-        <p style="font-size: 0.7em; color: #999;">Indusecc SGC - Sistema de Gestión de Calidad</p>
-      </div>
-    `;
-
-    await sendEmail({
-      email: user.email,
-      subject: `${subject}: ${audit.title}`,
-      message: `Hola ${user.name}, se te ha asignado la auditoría "${audit.title}" para el día ${auditDate}.`,
-      html
-    });
-  } catch (err) {
-    logger.error('Error al enviar correo de notificación de auditoría:', err);
-  }
+const notifyAssignment = async (assignedToId, audit, heading, actor) => {
+  if (!assignedToId || assignedToId === actor?.id) return;
+  const auditDate = new Date(audit.date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  await notify({
+    userIds: [assignedToId],
+    type: 'auditoria_asignada',
+    severity: 'info',
+    title: `${heading}: ${audit.title}`,
+    message: `Fecha programada: ${auditDate}.${audit.description ? ` ${audit.description}` : ''}`,
+    linkKey: 'audits',
+    entityType: 'audit',
+    entityId: audit.id,
+    createdBy: actor?.id || null,
+    dedupe: true,
+  });
 };
 
 const canAccessAudit = (user, audit) => {
@@ -79,7 +62,7 @@ const createAudit = async (req, res) => {
 
     if (error) throw error;
 
-    await notifyAssignment(audit.assigned_to, audit, 'Nueva Auditoría Asignada', 'Nueva Auditoría Asignada');
+    await notifyAssignment(audit.assigned_to, audit, 'Nueva auditoría asignada', req.user);
 
     logger.info(`Auditoría creada: ${title} por ${req.user.email}`);
 
@@ -274,7 +257,7 @@ const assignAudit = async (req, res) => {
 
     if (error) throw error;
 
-    await notifyAssignment(audit.assigned_to, audit, 'Auditoría Asignada', 'Auditoría Asignada');
+    await notifyAssignment(audit.assigned_to, audit, 'Auditoría asignada', req.user);
 
     logger.info(`Auditoría asignada: ${audit.title} -> ${audit.assigned_to_profile?.name || 'Sin asignar'} por ${req.user.email}`);
 

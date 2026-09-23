@@ -7,10 +7,10 @@ import {
   getActions, 
   getDocuments, 
   getUserPerformance, 
-  getCalendars, 
-  downloadDocument as downloadDocAPI, 
-  viewDocument 
+  getCalendars,
+  getComplianceReport
 } from '../../api/api'
+import { STATUS_META, downloadDocumentFile } from '../../utils/documents'
 
 function TaskItem({ label, meta, pri, priClass, initDone, urgente }) {
   const [done, setDone] = useState(initDone)
@@ -102,7 +102,16 @@ export default function MiPanel() {
         .slice(0, 3)
       setUpcomingEvents(upcoming)
 
-      const compliance = 85
+      let compliance = 0
+      let requirementsLabel = 'Sin datos'
+      try {
+        const complianceResponse = await getComplianceReport()
+        const report = complianceResponse.data?.data
+        compliance = report?.completion?.overall ?? 0
+        requirementsLabel = `${report?.requirements?.completed ?? 0}/${report?.requirements?.total ?? 0} req.`
+      } catch (error) {
+        console.error('Error loading compliance:', error)
+      }
 
       const stats = [
         {
@@ -117,8 +126,8 @@ export default function MiPanel() {
         {
           v: 'ok',
           icon: <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
-          trend: '+3%',
-          tt: 'up',
+          trend: requirementsLabel,
+          tt: compliance >= 80 ? 'up' : 'n',
           num: `${compliance}%`,
           lbl: 'Cumplimiento SGC',
           w: `${compliance}%`
@@ -153,15 +162,7 @@ export default function MiPanel() {
 
   const handleDownloadDocument = async (doc) => {
     try {
-      const response = await downloadDocAPI(doc._id)
-      const url = window.URL.createObjectURL(new Blob([response.data]))
-      const link = document.createElement('a')
-      link.href = url
-      link.setAttribute('download', doc.filename || `${doc.code}.pdf`)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      await downloadDocumentFile(doc.id || doc._id)
       toast(`Descargando ${doc.code}`, 'ok')
     } catch (error) {
       console.error('Error downloading document:', error)
@@ -169,15 +170,9 @@ export default function MiPanel() {
     }
   }
 
-  const handleViewDocument = async (doc) => {
-    try {
-      const response = await viewDocument(doc._id)
-      const url = window.URL.createObjectURL(new Blob([response.data]))
-      window.open(url, '_blank')
-    } catch (error) {
-      console.error('Error viewing document:', error)
-      toast('Error al visualizar el documento', 'err')
-    }
+  // Abre el visor del gestor documental (vista previa, firmas y descarga).
+  const handleViewDocument = (doc) => {
+    navigate(`/colaborador/documentos?doc=${doc.id || doc._id}`)
   }
 
   return (
@@ -276,20 +271,20 @@ export default function MiPanel() {
                         <td style={{fontSize:'.73rem',color:'var(--ash)',fontFamily:'monospace'}}>{doc.code}</td>
                         <td>
                           <div className="dn">
-                            <div className="dn-ico" style={doc.status === 'pending' ? {background:'var(--warn-bg)',color:'var(--warn)'} : {}}>
+                            <div className="dn-ico" style={doc.expiringSoon ? {background:'var(--warn-bg)',color:'var(--warn)'} : {}}>
                               <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                               </svg>
                             </div>
                             <div>
                               <div className="dn-title">{doc.title}</div>
-                              <div className="dn-code">v.{doc.version} · {new Date(doc.updatedAt).toLocaleDateString('es-ES')}</div>
+                              <div className="dn-code">{doc.version} · {new Date(doc.updatedAt).toLocaleDateString('es-ES')}</div>
                             </div>
                           </div>
                         </td>
                         <td>
-                          <span className={`badge ${doc.status === 'active' ? 'b-ok' : doc.status === 'pending' ? 'b-warn' : 'b-err'}`}>
-                            {doc.status === 'active' ? 'Vigente' : doc.status === 'pending' ? 'Por vencer' : 'Obsoleto'}
+                          <span className={`badge ${(STATUS_META[doc.status] || STATUS_META.vigente).cls}`}>
+                            {doc.expiringSoon ? 'Por vencer' : (STATUS_META[doc.status] || STATUS_META.vigente).label}
                           </span>
                         </td>
                         <td>

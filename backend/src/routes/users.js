@@ -1,6 +1,6 @@
 const express = require('express');
 const { body, query } = require('express-validator');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, blockDemo } = require('../middleware/auth');
 const { validateObjectId, handleValidationErrors } = require('../middleware/validation');
 const {
   createUser,
@@ -10,6 +10,7 @@ const {
   deleteUser,
   toggleUserStatus,
   getUserStats,
+  getUserDirectory,
   updateUserProfile
 } = require('../controllers/userController');
 
@@ -94,14 +95,15 @@ const getUsersValidation = [
 ];
 
 // Rutas
+router.get('/directory', authenticate, getUserDirectory);
 router.get('/stats', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), getUserStats);
 router.get('/', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), ...getUsersValidation, getUsers);
 router.get('/:id', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, getUserById);
-router.post('/', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), ...createUserValidation, createUser);
-router.post('/create', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), ...createUserValidation, createUser);
-router.put('/profile', authenticate, updateUserProfile);
-router.put('/:id', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, ...updateUserValidation, updateUser);
-router.patch('/:id/status', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, toggleUserStatus);
-router.delete('/:id', authenticate, authorize('SUPER_ADMIN'), validateObjectId, deleteUser);
+router.post('/', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), ...createUserValidation, createUser);
+router.post('/create', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), ...createUserValidation, createUser);
+router.put('/profile', authenticate, blockDemo, updateUserProfile);
+router.put('/:id', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, ...updateUserValidation, updateUser);
+router.patch('/:id/status', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, toggleUserStatus);
+router.delete('/:id', authenticate, blockDemo, authorize('SUPER_ADMIN'), validateObjectId, deleteUser);
 
 module.exports = router;

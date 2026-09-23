@@ -30,12 +30,12 @@ export const AuthProvider = ({ children }) => {
 
   // 3. Función de entrada (Login)
   const login = (userData) => {
-    console.log('AuthContext login stored', userData)
     // El backend envía { message: "...", user: { id, email, role }, token }
     const userToSave = userData.user; 
     setUser(userToSave);
     localStorage.setItem("user", JSON.stringify(userToSave));
     localStorage.setItem("token", userData.token);
+    if (userData.refreshToken) localStorage.setItem("refreshToken", userData.refreshToken);
   };
 
   // 4. Función de salida (Logout) - LA QUE NECESITABAS CORREGIR

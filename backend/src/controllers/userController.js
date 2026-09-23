@@ -414,7 +414,39 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
+// Directorio mínimo de usuarios activos (id, nombre, rol, área) para elegir firmantes o destinatarios.
+// Disponible para cualquier rol: no expone correos ni teléfonos.
+const getUserDirectory = async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, role, department')
+      .eq('active', true)
+      .order('name', { ascending: true })
+      .limit(500);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      data: {
+        users: (data || []).map(u => ({
+          id: u.id,
+          name: u.name,
+          role: u.role.toUpperCase(),
+          department: u.department || null,
+          isSelf: u.id === req.user.id,
+        })),
+      },
+    });
+  } catch (error) {
+    logger.error('Error al obtener directorio de usuarios:', error);
+    res.status(500).json({ success: false, message: 'Error al obtener usuarios', code: 'GET_DIRECTORY_ERROR' });
+  }
+};
+
 module.exports = {
+  getUserDirectory,
   createUser,
   getUsers,
   getUserById,

@@ -1,4 +1,11 @@
 const { supabaseAdmin } = require('../config/supabaseClient')
+const { DEMO_EMAIL_DOMAIN } = require('../config/environment')
+
+// Cuentas de acceso rápido por rol (botones del login): demo-<rol>@<dominio>
+const isDemoAccount = (email) => {
+  const value = String(email || '').toLowerCase()
+  return value.startsWith('demo-') && value.endsWith(`@${DEMO_EMAIL_DOMAIN}`)
+}
 
 const authenticate = async (req, res, next) => {
   const authHeader = req.header('Authorization')
@@ -31,6 +38,7 @@ const authenticate = async (req, res, next) => {
       name: profile.name,
       email: profile.email,
       role: profile.role.toUpperCase(),
+      isDemo: isDemoAccount(profile.email),
     }
     next()
   } catch (error) {
@@ -48,7 +56,22 @@ const authorize = (...roles) => {
   }
 }
 
+// Las cuentas de acceso rápido pueden usar toda la operación del SGC, pero no
+// administrar cuentas ni credenciales reales (evita escalar privilegios desde el login público).
+const blockDemo = (req, res, next) => {
+  if (req.user?.isDemo) {
+    return res.status(403).json({
+      success: false,
+      message: 'Esta acción no está disponible en las cuentas de demostración',
+      code: 'DEMO_ACCOUNT_RESTRICTED',
+    })
+  }
+  next()
+}
+
 module.exports = {
   authenticate,
   authorize,
+  blockDemo,
+  isDemoAccount,
 }

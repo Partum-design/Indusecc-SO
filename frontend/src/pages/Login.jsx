@@ -2,7 +2,7 @@ import { useState, useContext, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 // 1. Importa tu contexto y la función de la API
 import { AuthContext } from '../context/AuthContext'
-import { loginRequest } from '../api/auth' 
+import { loginRequest, demoLoginRequest, demoStatusRequest, publicStatsRequest } from '../api/auth'
 
 class Particle {
   constructor(canvas) {
@@ -44,12 +44,29 @@ class Particle {
   }
 }
 
+const QUICK_ROLES = [
+  { role: 'SUPER_ADMIN', label: 'Super Admin', desc: 'Control total del sistema', path: '/superadmin/dashboard',
+    icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z' },
+  { role: 'ADMIN', label: 'Administrador', desc: 'Calidad, documentos y auditorías', path: '/admin/dashboard',
+    icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' },
+  { role: 'COLABORADOR', label: 'Colaborador', desc: 'Tareas, documentos y hallazgos', path: '/colaborador/mipanel',
+    icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z' },
+  { role: 'CONSULTOR', label: 'Consultor', desc: 'Auditoría y análisis (lectura)', path: '/consultor/panel',
+    icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
+]
+
+const ROLE_HOME = Object.fromEntries(QUICK_ROLES.map(r => [r.role, r.path]))
+
 export default function Login() {
   const navigate = useNavigate()
   const { login } = useContext(AuthContext)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errorMsg, setErrorMsg] = useState(null)
+  const [demoEnabled, setDemoEnabled] = useState(false)
+  const [demoRoles, setDemoRoles] = useState([])
+  const [demoLoading, setDemoLoading] = useState(null)
+  const [stats, setStats] = useState(null)
   
   // Referencia para el canvas de partículas
   const canvasRef = useRef(null)
@@ -140,18 +157,47 @@ export default function Login() {
     }
   }, [])
 
+  // Botones de acceso rápido y cifras reales del sistema (no dependen de que haya sesión).
+  useEffect(() => {
+    let cancelled = false
+    demoStatusRequest()
+      .then(res => {
+        if (cancelled) return
+        setDemoEnabled(Boolean(res.data?.data?.enabled))
+        setDemoRoles(res.data?.data?.roles || [])
+      })
+      .catch(() => {})
+    publicStatsRequest()
+      .then(res => { if (!cancelled) setStats(res.data?.data || null) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const finishLogin = (data) => {
+    login(data)
+    const home = ROLE_HOME[data.user?.role]
+    if (home) navigate(home)
+  }
+
+  const handleQuickLogin = async (role) => {
+    setErrorMsg(null)
+    setDemoLoading(role)
+    try {
+      const res = await demoLoginRequest(role)
+      finishLogin(res.data)
+    } catch (error) {
+      setErrorMsg(error.response?.data?.message || 'No se pudo iniciar el acceso rápido. Intenta de nuevo.')
+      setDemoLoading(null)
+    }
+  }
+
   const handleLogin = async (e) => {
     e.preventDefault()
     setErrorMsg(null)
 
     try {
       const res = await loginRequest({ email, password });
-      login(res.data);
-      const role = res.data.user?.role;
-      if (role === 'SUPER_ADMIN') navigate('/superadmin/dashboard');
-      else if (role === 'ADMIN') navigate('/admin/dashboard');
-      else if (role === 'COLABORADOR') navigate('/colaborador/mipanel');
-      else if (role === 'CONSULTOR') navigate('/consultor/panel');
+      finishLogin(res.data);
     } catch (error) {
       setErrorMsg(error.response?.data?.message || "Error al iniciar sesión.");
     }
@@ -165,6 +211,10 @@ export default function Login() {
             0% { background-position: -150% center; }
             100% { background-position: 150% center; }
           }
+          .role-quick { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #fff; border: 1px solid var(--border2); border-radius: 8px; cursor: pointer; transition: all .2s; font-family: inherit; }
+          .role-quick:hover:not(:disabled) { border-color: var(--gold); box-shadow: 0 4px 14px rgba(123,30,34,.12); transform: translateY(-1px); }
+          .role-quick:disabled { opacity: .6; cursor: wait; }
+          .role-quick-ico { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg,var(--red-m),var(--red)); color: var(--gold-l); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
           .shimmer-text {
             background: linear-gradient(
               90deg, 
@@ -186,17 +236,6 @@ export default function Login() {
 
       {/* Hero */}
       <div className="hero" style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '5rem', overflow: 'hidden', minHeight: '100vh' }}>
-        {/* Video Background */}
-        <video 
-          autoPlay muted loop playsInline
-          style={{
-            position: 'absolute', top: '50%', left: '50%', width: '100%', height: '100%',
-            objectFit: 'cover', transform: 'translate(-50%, -50%)', zIndex: 0, opacity: 0.35
-          }}
-        >
-          <source src="https://cdn.pixabay.com/video/2021/04/12/70874-536967520_large.mp4" type="video/mp4" />
-        </video>
-
         {/* Constellation Canvas */}
         <canvas 
           ref={canvasRef}
@@ -229,7 +268,7 @@ export default function Login() {
             <div style={{ flex: 1, height: 1, background: 'linear-gradient(to right,rgba(201,168,76,.6),transparent)' }} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'center', gap: 0 }}>
-            {[{ num: '142', label: 'Docs. Vigentes' }, { num: '96%', label: 'Cumplimiento' }, { num: '5', label: 'Auditorías' }].map((s, i, arr) => (
+            {[{ num: stats ? String(stats.documentsActive) : '—', label: 'Docs. Vigentes' }, { num: stats ? `${stats.compliance}%` : '—', label: 'Cumplimiento ISO' }, { num: stats ? String(stats.audits) : '—', label: 'Auditorías' }].map((s, i, arr) => (
               <div key={i} style={{ padding: '0 1.8rem 0 0', borderRight: i < arr.length - 1 ? '1px solid rgba(201,168,76,.2)' : 'none', paddingLeft: i > 0 ? '1.8rem' : 0 }}>
                 <div style={{ fontFamily: "'Playfair Display', serif", fontSize: '1.8rem', fontWeight: 700, color: 'var(--gold-l)', lineHeight: 1, marginBottom: '.35rem' }}>{s.num}</div>
                 <div style={{ fontSize: 9, fontWeight: 500, letterSpacing: '.15em', textTransform: 'uppercase', color: 'rgba(255,255,255,.4)', lineHeight: 1.5 }}>{s.label}</div>
@@ -269,6 +308,37 @@ export default function Login() {
             <div style={{ width: 4, height: 4, background: 'var(--gold)', transform: 'rotate(45deg)', flexShrink: 0 }} />
             <div style={{ flex: 1, height: 1, background: 'linear-gradient(to right,var(--gold),rgba(201,168,76,.1))' }} />
           </div>
+
+          {demoEnabled && (
+            <div style={{ marginBottom: '1.6rem' }}>
+              <div style={{ fontSize: '.73rem', fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--ash)', marginBottom: '.7rem' }}>Entrar con un clic</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.6rem' }}>
+                {QUICK_ROLES.filter(r => demoRoles.includes(r.role)).map(r => (
+                  <button
+                    key={r.role}
+                    type="button"
+                    className="role-quick"
+                    onClick={() => handleQuickLogin(r.role)}
+                    disabled={demoLoading !== null}
+                    aria-label={`Entrar como ${r.label}`}
+                  >
+                    <span className="role-quick-ico">
+                      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" width="18"><path strokeLinecap="round" strokeLinejoin="round" d={r.icon} /></svg>
+                    </span>
+                    <span style={{ textAlign: 'left', minWidth: 0 }}>
+                      <span style={{ display: 'block', fontWeight: 700, fontSize: '.85rem', color: 'var(--ink)' }}>{demoLoading === r.role ? 'Entrando…' : r.label}</span>
+                      <span style={{ display: 'block', fontSize: '.68rem', color: 'var(--ash)', lineHeight: 1.3 }}>{r.desc}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '1.2rem 0 0' }}>
+                <div style={{ flex: 1, height: 1, background: 'var(--border2)' }} />
+                <span style={{ fontSize: '.7rem', color: 'var(--ash)', fontWeight: 600 }}>o con tu correo</span>
+                <div style={{ flex: 1, height: 1, background: 'var(--border2)' }} />
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             {/* ELIMINÉ EL SIMULADOR DE ROLES DE AQUÍ */}

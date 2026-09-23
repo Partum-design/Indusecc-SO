@@ -26,27 +26,18 @@ const riskRoutes = require('./routes/risks');
 const actionRoutes = require('./routes/actions');
 const metricsRoutes = require('./routes/metrics');
 const trainingRoutes = require('./routes/trainings');
+const notificationRoutes = require('./routes/notifications');
+const publicRoutes = require('./routes/public');
 
 const app = express();
+
+// Detrás de Vercel/proxies: necesario para que rate-limit y las firmas registren la IP real del cliente.
+app.set('trust proxy', 1);
 
 // Seguridad
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX_REQUESTS,
-  message: {
-    success: false,
-    message: 'Demasiadas solicitudes desde esta IP, por favor intenta más tarde.',
-    code: 'RATE_LIMIT_EXCEEDED'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/', limiter);
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
@@ -65,8 +56,38 @@ app.use(cors({
     return callback(new Error(`Origen no permitido por CORS: ${origin}`));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Limitación de tasa. Va DESPUÉS de CORS: si no, una respuesta 429 sale sin cabeceras CORS y el
+// navegador la muestra como un error de CORS en lugar de "demasiadas solicitudes".
+//  - Usuarios con sesión: un cupo por sesión (varios empleados detrás de la misma IP de oficina no se bloquean entre sí).
+//  - Respaldo por IP, más holgado, para quien envía tokens falsos o no se autentica.
+const tooMany = {
+  success: false,
+  message: 'Demasiadas solicitudes, por favor intenta más tarde.',
+  code: 'RATE_LIMIT_EXCEEDED'
+};
+const notCounted = (req) => req.method === 'OPTIONS' || req.path === '/health';
+
+app.use('/api/', rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_MAX_REQUESTS * 10,
+  message: tooMany,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: notCounted,
+}));
+
+app.use('/api/', rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_MAX_REQUESTS,
+  message: tooMany,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => notCounted(req) || !req.header('Authorization'),
+  keyGenerator: (req) => `session:${req.header('Authorization').slice(-40)}`,
 }));
 
 // Logging
@@ -97,6 +118,8 @@ app.use('/api/risks', riskRoutes);
 app.use('/api/actions', actionRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/trainings', trainingRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/public', publicRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -19,8 +19,13 @@ const EMAIL_SERVICE = process.env.EMAIL_SERVICE || 'gmail';
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD;
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000; // 15 minutos
-const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100;
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 300;
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
+
+// Acceso rápido por rol (botones de la pantalla de login). Está activo por defecto;
+// se apaga en producción real con DEMO_LOGIN_ENABLED=false.
+const DEMO_LOGIN_ENABLED = String(process.env.DEMO_LOGIN_ENABLED ?? 'true').toLowerCase() !== 'false';
+const DEMO_EMAIL_DOMAIN = (process.env.DEMO_EMAIL_DOMAIN || 'indusecc.com').toLowerCase();
 
 module.exports = {
   PORT,
@@ -36,4 +41,6 @@ module.exports = {
   RATE_LIMIT_WINDOW_MS,
   RATE_LIMIT_MAX_REQUESTS,
   LOG_LEVEL,
+  DEMO_LOGIN_ENABLED,
+  DEMO_EMAIL_DOMAIN,
 }

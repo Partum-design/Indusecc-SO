@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
+const { notify } = require('../services/notificationService');
 
 // El enum calendar_type de la base solo acepta: auditoria, capacitacion, reunion, otro.
 // El frontend (CalendarioAdmin.jsx) también ofrece "Vencimiento" y "Revisión", que
@@ -41,6 +42,24 @@ const toApiCalendar = (row) => ({
 const SELECT_WITH_PROFILES = '*, assigned_to_profile:profiles!calendar_events_assigned_to_fkey(id, name, email), created_by_profile:profiles!calendar_events_created_by_fkey(id, name, email)';
 
 // Crear evento de calendario
+
+const notifyEventAssignee = async (calendar, actor) => {
+  if (!calendar.assigned_to || calendar.assigned_to === actor.id) return;
+  const eventDate = new Date(calendar.date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  await notify({
+    userIds: [calendar.assigned_to],
+    type: 'evento_asignado',
+    severity: 'info',
+    title: `Evento asignado: ${calendar.title}`,
+    message: `Fecha: ${eventDate}.${calendar.description ? ` ${calendar.description}` : ''}`,
+    linkKey: 'calendar',
+    entityType: 'calendar_event',
+    entityId: calendar.id,
+    createdBy: actor.id,
+    dedupe: true,
+  });
+};
+
 const createCalendar = async (req, res) => {
   try {
     const { title, description, date, type, assignedTo } = req.body;
@@ -60,6 +79,8 @@ const createCalendar = async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    await notifyEventAssignee(calendar, req.user);
 
     logger.info(`Evento de calendario creado: ${title} por ${req.user.email}`);
 
@@ -327,6 +348,8 @@ const assignCalendar = async (req, res) => {
       .single();
 
     if (updateError) throw updateError;
+
+    await notifyEventAssignee(calendar, req.user);
 
     logger.info(`Evento de calendario asignado: ${calendar.title} -> ${calendar.assigned_to_profile?.name || 'Sin asignar'} por ${req.user.email}`);
 

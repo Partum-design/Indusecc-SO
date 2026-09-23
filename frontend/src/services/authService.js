@@ -12,6 +12,7 @@ const authService = {
         const data = res.data?.data || res.data
         if (data?.token) {
             localStorage.setItem('token', data.token)
+            if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken)
             localStorage.setItem('user', JSON.stringify(data.user))
         }
         return data
@@ -22,6 +23,7 @@ const authService = {
      */
     logout() {
         localStorage.removeItem('token')
+        localStorage.removeItem('refreshToken')
         localStorage.removeItem('user')
     },
 

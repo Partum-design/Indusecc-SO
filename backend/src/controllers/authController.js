@@ -1,5 +1,6 @@
 const { supabaseAdmin, supabaseAuth } = require('../config/supabaseClient')
-const { FRONTEND_URL } = require('../config/environment')
+const { FRONTEND_URL, DEMO_LOGIN_ENABLED } = require('../config/environment')
+const { DEMO_ROLES, demoLogin: performDemoLogin } = require('../services/demoAccess')
 const logger = require('../utils/logger')
 const sendEmail = require('../utils/email')
 
@@ -49,6 +50,68 @@ const loginUser = async (req, res) => {
   } catch (error) {
     logger.error('Error en login:', error)
     res.status(500).json({ message: 'Error en el servidor' })
+  }
+}
+
+// Indica al login si debe mostrar los botones de acceso rápido por rol.
+const demoStatus = (_req, res) => {
+  res.json({
+    success: true,
+    data: { enabled: DEMO_LOGIN_ENABLED, roles: DEMO_LOGIN_ENABLED ? Object.keys(DEMO_ROLES) : [] }
+  })
+}
+
+// Inicio de sesión con un solo clic por rol. Devuelve exactamente lo mismo que /auth/login.
+const demoLogin = async (req, res) => {
+  if (!DEMO_LOGIN_ENABLED) {
+    return res.status(403).json({ success: false, message: 'El acceso rápido por rol está desactivado', code: 'DEMO_LOGIN_DISABLED' })
+  }
+
+  const role = String(req.body?.role || '').toUpperCase()
+  if (!DEMO_ROLES[role]) {
+    return res.status(400).json({ success: false, message: 'Rol inválido', code: 'INVALID_ROLE' })
+  }
+
+  try {
+    const session = await performDemoLogin(role)
+    res.json({ message: 'Login exitoso', ...session })
+  } catch (error) {
+    logger.error('Error en acceso rápido por rol:', error)
+    res.status(500).json({ message: 'No se pudo iniciar el acceso rápido. Intenta de nuevo.' })
+  }
+}
+
+// Renueva la sesión sin volver a pedir contraseña (los tokens de acceso de Supabase duran 1 hora).
+const refreshSession = async (req, res) => {
+  const refreshToken = req.body?.refreshToken
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    return res.status(400).json({ success: false, message: 'refreshToken requerido', code: 'MISSING_REFRESH_TOKEN' })
+  }
+
+  try {
+    const { data, error } = await supabaseAuth.auth.refreshSession({ refresh_token: refreshToken })
+    if (error || !data?.session) {
+      return res.status(401).json({ success: false, message: 'Sesión expirada, inicia sesión de nuevo', code: 'REFRESH_FAILED' })
+    }
+
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('id, name, email, role, active')
+      .eq('id', data.user.id)
+      .maybeSingle()
+
+    if (!profile?.active) {
+      return res.status(403).json({ success: false, message: 'Usuario desactivado', code: 'USER_INACTIVE' })
+    }
+
+    res.json({
+      token: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user: { id: profile.id, name: profile.name, email: profile.email, role: profile.role.toUpperCase() },
+    })
+  } catch (error) {
+    logger.error('Error al renovar sesión:', error)
+    res.status(500).json({ success: false, message: 'No se pudo renovar la sesión', code: 'REFRESH_ERROR' })
   }
 }
 
@@ -203,4 +266,4 @@ const resetPassword = async (req, res) => {
   }
 };
 
-module.exports = { loginUser, uploadFile, registerUser, forgotPassword, resetPassword }
+module.exports = { loginUser, refreshSession, demoLogin, demoStatus, uploadFile, registerUser, forgotPassword, resetPassword }

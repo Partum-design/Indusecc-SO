@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, blockDemo } = require('../middleware/auth');
 const { handleValidationErrors } = require('../middleware/validation');
 const {
   getConfiguration,
@@ -44,20 +44,20 @@ const purgeLogsValidation = [
 
 // Rutas de configuración (solo SUPER_ADMIN)
 router.get('/config', authenticate, authorize('SUPER_ADMIN'), getConfiguration);
-router.put('/config', authenticate, authorize('SUPER_ADMIN'), updateConfigValidation, updateConfiguration);
-router.post('/config/restore', authenticate, authorize('SUPER_ADMIN'), restoreConfiguration);
+router.put('/config', authenticate, blockDemo, authorize('SUPER_ADMIN'), updateConfigValidation, updateConfiguration);
+router.post('/config/restore', authenticate, blockDemo, authorize('SUPER_ADMIN'), restoreConfiguration);
 
 // Rutas de gestión de usuarios (solo SUPER_ADMIN)
-router.put('/users/:id/password', authenticate, authorize('SUPER_ADMIN'), resetPasswordValidation, resetUserPassword);
+router.put('/users/:id/password', authenticate, blockDemo, authorize('SUPER_ADMIN'), resetPasswordValidation, resetUserPassword);
 
 // Rutas de logs (solo SUPER_ADMIN)
 router.get('/logs', authenticate, authorize('SUPER_ADMIN'), getAuditLogs);
-router.post('/logs/purge', authenticate, authorize('SUPER_ADMIN'), purgeLogsValidation, purgeLogs);
+router.post('/logs/purge', authenticate, blockDemo, authorize('SUPER_ADMIN'), purgeLogsValidation, purgeLogs);
 
 // Rutas de sesiones (solo SUPER_ADMIN)
-router.post('/sessions/logout-all', authenticate, authorize('SUPER_ADMIN'), logoutAllSessions);
+router.post('/sessions/logout-all', authenticate, blockDemo, authorize('SUPER_ADMIN'), logoutAllSessions);
 
 // Rutas de sistema (solo SUPER_ADMIN)
-router.post('/system/cache/clear', authenticate, authorize('SUPER_ADMIN'), clearCache);
+router.post('/system/cache/clear', authenticate, blockDemo, authorize('SUPER_ADMIN'), clearCache);
 
 module.exports = router;

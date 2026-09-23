@@ -4,6 +4,18 @@ export const loginRequest = (data) => {
   return api.post('auth/login', data)
 }
 
+export const demoLoginRequest = (role) => {
+  return api.post('auth/demo-login', { role })
+}
+
+export const demoStatusRequest = () => {
+  return api.get('auth/demo-status')
+}
+
+export const publicStatsRequest = () => {
+  return api.get('public/stats')
+}
+
 export const registerRequest = (data) => {
   // Usar el nuevo endpoint de solicitud de registro
   return api.post('registration/request', data)

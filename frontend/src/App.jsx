@@ -22,6 +22,8 @@ import SuperAdminAuditoriaLogs from './pages/superadmin/SuperAdminAuditoriaLogs'
 import SuperAdminConfiguracion from './pages/superadmin/SuperAdminConfiguracion'
 import SuperAdminContrasenas from './pages/superadmin/SuperAdminContrasenas'
 import SuperAdminNorma from './pages/superadmin/SuperAdminNorma'
+import SuperAdminDocumentos from './pages/superadmin/SuperAdminDocumentos'
+import Notificaciones from './pages/shared/Notificaciones'
 
 // Admin pages
 import Dashboard from './pages/admin/Dashboard'
@@ -103,6 +105,7 @@ export default function App() {
           <Route path="configuracion" element={<Configuracion />} />
           <Route path="reportes" element={<Reportes />} />
           <Route path="riesgos" element={<RiesgosAdmin />} />
+          <Route path="notificaciones" element={<Notificaciones />} />
         </Route>
 
         {/* Colaborador */}
@@ -124,6 +127,7 @@ export default function App() {
           <Route path="indicadores" element={<Indicadores />} />
           <Route path="capacitacion" element={<Capacitacion />} />
           <Route path="calendario" element={<Calendario />} />
+          <Route path="notificaciones" element={<Notificaciones />} />
         </Route>
 
         {/* Consultor */}
@@ -143,6 +147,7 @@ export default function App() {
           <Route path="auditorias" element={<ConsultorAuditorias />} />
           <Route path="documentos" element={<ConsultorDocumentos />} />
           <Route path="reportes" element={<ConsultorReportes />} />
+          <Route path="notificaciones" element={<Notificaciones />} />
         </Route>
 
         {/* Super Admin */}
@@ -161,6 +166,8 @@ export default function App() {
           <Route path="configuracion" element={<SuperAdminConfiguracion />} />
           <Route path="contrasenas" element={<SuperAdminContrasenas />} />
           <Route path="norma" element={<SuperAdminNorma />} />
+          <Route path="documentos" element={<SuperAdminDocumentos />} />
+          <Route path="notificaciones" element={<Notificaciones />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/login" replace />} />

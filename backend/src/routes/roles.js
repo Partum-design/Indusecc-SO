@@ -1,5 +1,5 @@
 const express = require('express');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, blockDemo } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validation');
 const {
   createRole,
@@ -12,7 +12,7 @@ const {
 const router = express.Router();
 
 // Crear rol
-router.post('/', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), createRole);
+router.post('/', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), createRole);
 
 // Obtener roles
 router.get('/', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), getRoles);
@@ -21,9 +21,9 @@ router.get('/', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), getRoles);
 router.get('/:id', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, getRoleById);
 
 // Actualizar rol
-router.put('/:id', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, updateRole);
+router.put('/:id', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, updateRole);
 
 // Eliminar rol
-router.delete('/:id', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, deleteRole);
+router.delete('/:id', authenticate, blockDemo, authorize('SUPER_ADMIN', 'ADMIN'), validateObjectId, deleteRole);
 
 module.exports = router;

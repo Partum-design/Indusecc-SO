@@ -1,6 +1,6 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
-const sendEmail = require('../utils/email');
+const { notify } = require('../services/notificationService');
 
 const SEVERITY_TO_DB = {
   critical: 'critica', high: 'alta', medium: 'media', low: 'baja',
@@ -78,48 +78,21 @@ const createFinding = async (req, res) => {
 
     if (error) throw error;
 
-    try {
-      const { data: admins } = await supabaseAdmin
-        .from('profiles')
-        .select('name, email')
-        .in('role', ['admin', 'super_admin'])
-        .eq('active', true);
-
-      if (admins?.length) {
-        const reporterName = req.user.name || req.user.email;
-        const findingSeverity = SEVERITY_FROM_DB[finding.severity] || finding.severity;
-
-        const html = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-            <h2 style="color: #9B1C1C; border-bottom: 2px solid #D4AF37; padding-bottom: 10px;">Nuevo Hallazgo Reportado</h2>
-            <p>Se ha registrado un nuevo hallazgo en la plataforma que requiere revisión.</p>
-            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #9B1C1C;">
-              <p><strong>Título:</strong> ${title}</p>
-              <p><strong>Severidad:</strong> <span style="color: #c62828; font-weight: bold;">${findingSeverity}</span></p>
-              <p><strong>Área:</strong> ${area || 'No especificada'}</p>
-              <p><strong>Reportado por:</strong> ${reporterName}</p>
-              <p><strong>Descripción:</strong> ${description || 'Sin descripción'}</p>
-            </div>
-            <p>Por favor, ingresa al panel de administración para gestionar este hallazgo.</p>
-            <hr />
-            <p style="font-size: 0.7em; color: #999;">Indusecc SGC - Sistema de Gestión de Calidad</p>
-          </div>
-        `;
-
-        for (const admin of admins) {
-          if (admin.email) {
-            await sendEmail({
-              email: admin.email,
-              subject: `⚠️ Nuevo Hallazgo: ${title}`,
-              message: `Se ha reportado un nuevo hallazgo de severidad ${findingSeverity} por ${reporterName}.`,
-              html
-            });
-          }
-        }
-      }
-    } catch (err) {
-      logger.error('Error al enviar notificaciones de nuevo hallazgo a administradores:', err);
-    }
+    const reporterName = req.user.name || req.user.email;
+    const findingSeverity = SEVERITY_FROM_DB[finding.severity] || finding.severity;
+    await notify({
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+      userIds: assignedTo ? [assignedTo] : [],
+      exceptUserId: req.user.id,
+      type: 'hallazgo_nuevo',
+      severity: ['alta', 'critica'].includes(finding.severity) ? 'error' : 'warning',
+      title: `Nuevo hallazgo: ${title}`,
+      message: `${reporterName} reportó un hallazgo de severidad ${findingSeverity}${area ? ` en ${area}` : ''}.`,
+      linkKey: 'findings',
+      entityType: 'finding',
+      entityId: finding.id,
+      createdBy: req.user.id,
+    });
 
     logger.info(`Hallazgo creado: ${title} por ${req.user.email}`);
 

@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, blockDemo } = require('../middleware/auth');
 const { validateObjectId, handleValidationErrors } = require('../middleware/validation');
 const {
   requestRegistration,
@@ -65,6 +65,7 @@ router.get('/requests', authenticate, authorize('SUPER_ADMIN', 'ADMIN'), getRegi
 
 router.post('/approve', 
   authenticate, 
+  blockDemo, 
   authorize('SUPER_ADMIN', 'ADMIN'), 
   approveValidation, 
   approveRegistration
@@ -72,6 +73,7 @@ router.post('/approve',
 
 router.post('/reject', 
   authenticate, 
+  blockDemo, 
   authorize('SUPER_ADMIN', 'ADMIN'), 
   rejectValidation, 
   rejectRegistration

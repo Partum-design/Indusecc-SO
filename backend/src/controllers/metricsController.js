@@ -1,4 +1,5 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
+const { getIsoCompliance } = require('../services/isoService');
 const logger = require('../utils/logger');
 
 // Obtener indicadores generales del colaborador
@@ -13,12 +14,14 @@ const getCollaboratorIndicators = async (req, res) => {
       { data: actions, error: actionsError },
       { data: documents, error: documentsError },
       { data: audits, error: auditsError },
-      { data: findings, error: findingsError }
+      { data: findings, error: findingsError },
+      iso
     ] = await Promise.all([
       supabaseAdmin.from('actions').select('status, updated_at').eq('assigned_to', userId),
       supabaseAdmin.from('documents').select('expiry_date'),
       supabaseAdmin.from('audits').select('status'),
-      supabaseAdmin.from('findings').select('status')
+      supabaseAdmin.from('findings').select('status'),
+      getIsoCompliance()
     ]);
 
     if (actionsError) throw actionsError;
@@ -50,9 +53,9 @@ const getCollaboratorIndicators = async (req, res) => {
     const completedAudits = audits.filter(a => a.status === 'completada').length;
     const resolvedFindings = findings.filter(f => f.status === 'cerrado').length;
 
-    const totalItems = totalActions + totalDocuments + audits.length + findings.length;
-    const completedItems = completedActions + activeDocuments + completedAudits + resolvedFindings;
-    const sgcCompliance = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
+    // Cumplimiento SGC = avance real de la norma ISO 9001:2015 (documentos vinculados a cada
+    // requisito y firmados), no una mezcla de contadores sin relación entre sí.
+    const sgcCompliance = iso.summary.overall;
 
     const lastMonthStart = new Date(currentYear, currentMonth - 1, 1);
     const lastMonthEnd = new Date(currentYear, currentMonth, 0, 23, 59, 59, 999);
@@ -114,42 +117,38 @@ const getCollaboratorIndicators = async (req, res) => {
   }
 };
 
-// Obtener cumplimiento por cláusula ISO
+// Cumplimiento por cláusula ISO: avance documental real (documentos vinculados y firmados)
+// más los hallazgos abiertos/cerrados de cada punto de la norma.
 const getComplianceByClause = async (req, res) => {
   try {
-    const { data: findings, error } = await supabaseAdmin.from('findings').select('clause, status');
+    const [{ tree }, { data: findings, error }] = await Promise.all([
+      getIsoCompliance(),
+      supabaseAdmin.from('findings').select('clause, status')
+    ]);
     if (error) throw error;
 
-    const clauses = [
-      { id: '4', label: 'Cl. 4 — Contexto', total: 0, resolved: 0 },
-      { id: '5', label: 'Cl. 5 — Liderazgo', total: 0, resolved: 0 },
-      { id: '6', label: 'Cl. 6 — Planificación', total: 0, resolved: 0 },
-      { id: '7', label: 'Cl. 7 — Apoyo', total: 0, resolved: 0 },
-      { id: '8', label: 'Cl. 8 — Operación', total: 0, resolved: 0 },
-      { id: '9', label: 'Cl. 9 — Evaluación', total: 0, resolved: 0 },
-      { id: '10', label: 'Cl. 10 — Mejora', total: 0, resolved: 0 }
-    ];
-
+    const findingsByMain = new Map();
     findings.forEach(finding => {
-      const clauseIndex = clauses.findIndex(c => c.id === finding.clause);
-      if (clauseIndex !== -1) {
-        clauses[clauseIndex].total++;
-        if (finding.status === 'cerrado') {
-          clauses[clauseIndex].resolved++;
-        }
-      }
+      const main = String(finding.clause || '').split('.')[0];
+      if (!main) return;
+      const entry = findingsByMain.get(main) || { total: 0, resolved: 0 };
+      entry.total += 1;
+      if (finding.status === 'cerrado') entry.resolved += 1;
+      findingsByMain.set(main, entry);
     });
 
-    const complianceData = clauses.map(clause => {
-      const compliance = clause.total === 0 ? 100 : Math.round((clause.resolved / clause.total) * 100);
-
+    const complianceData = tree.map(node => {
+      const f = findingsByMain.get(node.code) || { total: 0, resolved: 0 };
       return {
-        clause: clause.id,
-        label: clause.label,
-        compliance,
-        totalFindings: clause.total,
-        resolvedFindings: clause.resolved,
-        color: compliance >= 90 ? '#16A34A' : compliance >= 80 ? '#F59E0B' : '#DC2626'
+        clause: node.code,
+        label: `Cl. ${node.code} — ${node.title}`,
+        compliance: node.completion,
+        requirements: node.leafCount,
+        requirementsCompleted: node.leafCompleted,
+        documents: node.docCount,
+        totalFindings: f.total,
+        resolvedFindings: f.resolved,
+        color: node.completion >= 90 ? '#16A34A' : node.completion >= 50 ? '#F59E0B' : '#DC2626'
       };
     });
 

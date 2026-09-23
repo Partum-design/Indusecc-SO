@@ -28,7 +28,7 @@ export default function Reportes() {
       try {
         const [compRes, docsRes, auditsRes, findingsRes, clauseMetricsRes] = await Promise.all([
           getComplianceReport(),
-          getDocuments(),
+          getDocuments({ limit: 500 }),
           getAudits(),
           getFindings(),
           getComplianceByClause()
@@ -38,22 +38,29 @@ export default function Reportes() {
         const docs = docsRes.data?.data?.documents || docsRes.data?.data || []
         const audits = auditsRes.data?.data?.audits || auditsRes.data?.data || []
         const findings = findingsRes.data?.data?.findings || findingsRes.data?.data || []
-        const clauseMetrics = clauseMetricsRes.data?.data || []
+        const clauseMetrics = clauseMetricsRes.data?.data?.compliance || []
 
         // Mapear cláusulas reales si existen en el API
         const updatedClausulas = reportData.clausulas.map(c => {
           const match = clauseMetrics.find(m => c.label.includes(`Cl. ${m.clause}`))
-          return match ? { ...c, pct: match.compliance } : c
+          if (!match) return c
+          const pct = match.compliance
+          return {
+            ...c,
+            pct,
+            color: pct >= 90 ? '#16A34A' : pct >= 50 ? '#F59E0B' : '#DC2626',
+            numColor: pct >= 90 ? 'var(--ok)' : pct >= 50 ? 'var(--warn)' : 'var(--err)'
+          }
         })
 
         setReportData({
           cumplimiento: compliance,
-          docsVigentes: docs.filter(d => d.status === 'Vigente').length,
+          docsVigentes: docs.filter(d => d.status === 'vigente').length,
           auditorias: audits.length,
-          ncActivas: findings.filter(f => f.status !== 'Cerrada').length,
+          ncActivas: findings.filter(f => f.status !== 'Cerrado').length,
           clausulas: updatedClausulas,
           nc: [
-            { periodo: 'Q1 2026', abiertas: findings.length, cerradas: findings.filter(f => f.status === 'Cerrada').length, badge: 'b-gray', eficacia: `${Math.round((findings.filter(f => f.status === 'Cerrada').length / (findings.length || 1)) * 100)}%`, aColor: 'var(--warn)', cColor: 'var(--ok)' },
+            { periodo: 'Q1 2026', abiertas: findings.length, cerradas: findings.filter(f => f.status === 'Cerrado').length, badge: 'b-gray', eficacia: `${Math.round((findings.filter(f => f.status === 'Cerrado').length / (findings.length || 1)) * 100)}%`, aColor: 'var(--warn)', cColor: 'var(--ok)' },
           ]
         })
       } catch (err) {

@@ -9,15 +9,8 @@ import {
   getRisks,
 } from '../../api/api'
 
-const CLAUSULAS_FALLBACK = [
-  { label:'Cl. 4 — Contexto', compliance:98 },
-  { label:'Cl. 5 — Liderazgo', compliance:95 },
-  { label:'Cl. 6 — Planificación', compliance:88 },
-  { label:'Cl. 7 — Apoyo', compliance:91 },
-  { label:'Cl. 8 — Operación', compliance:79 },
-  { label:'Cl. 9 — Evaluación del Desempeño', compliance:93 },
-  { label:'Cl. 10 — Mejora', compliance:82 },
-]
+// Sin cifras de relleno: el cumplimiento por cláusula siempre viene del API (documentos + firmas).
+const CLAUSULAS_FALLBACK = []
 
 export default function ConsultorReportes() {
   const [clausulas, setClausulas] = useState(CLAUSULAS_FALLBACK)

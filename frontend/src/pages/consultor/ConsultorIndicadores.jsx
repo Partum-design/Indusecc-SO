@@ -8,15 +8,8 @@ import {
   getAudits,
 } from '../../api/api'
 
-const CLAUSULAS_FALLBACK = [
-  { label:'Cl. 4 — Contexto', compliance:98, color:'#16A34A' },
-  { label:'Cl. 5 — Liderazgo', compliance:95, color:'#16A34A' },
-  { label:'Cl. 6 — Planificación', compliance:88, color:'#F59E0B' },
-  { label:'Cl. 7 — Apoyo', compliance:91, color:'#F59E0B' },
-  { label:'Cl. 8 — Operación', compliance:79, color:'#F59E0B' },
-  { label:'Cl. 9 — Evaluación del Desempeño', compliance:93, color:'#F59E0B' },
-  { label:'Cl. 10 — Mejora', compliance:82, color:'#F59E0B' },
-]
+// Sin cifras de relleno: el cumplimiento por cláusula siempre viene del API (documentos + firmas).
+const CLAUSULAS_FALLBACK = []
 
 function trendColor(pct, meta) {
   if (pct >= meta) return 'var(--ok)'
@@ -66,7 +59,7 @@ export default function ConsultorIndicadores() {
   // KPIs derivados
   const sgcPct    = kpis?.sgcCompliance?.percentage ?? (clausulas.length > 0 ? Math.round(clausulas.reduce((a,c) => a + c.compliance, 0) / clausulas.length) : 0)
   const sgcLabel  = kpis?.sgcCompliance?.value ?? `${sgcPct}%`
-  const docsPct   = kpis?.activeDocuments?.percentage ?? 87
+  const docsPct   = kpis?.activeDocuments?.percentage ?? 0
   const docsVal   = kpis?.activeDocuments?.value ?? '—'
   const ncTotal   = findings.length
   const ncCerrado = findings.filter(f => f.status === 'Cerrado').length

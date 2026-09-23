@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require('../config/supabaseClient');
 const logger = require('../utils/logger');
+const { notify } = require('../services/notificationService');
 
 const ALLOWED_SELF_REQUEST_ROLES = ['COLABORADOR', 'CONSULTOR'];
 
@@ -55,6 +56,17 @@ const requestRegistration = async (req, res) => {
       .select('id, name, email, requested_role, status, created_at')
       .eq('user_id', created.user.id)
       .maybeSingle();
+
+    await notify({
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+      type: 'solicitud_acceso',
+      severity: 'info',
+      title: `Nueva solicitud de acceso: ${name}`,
+      message: `${email} solicita acceso como ${role}.`,
+      linkKey: 'users',
+      entityType: 'registration_request',
+      entityId: request?.id || null,
+    });
 
     res.status(201).json({
       success: true,
